@@ -9,6 +9,11 @@ build/
 # Prebuilt dependencies (large; see README for how to fetch them)
 /.deps/
 
+# Node tooling for the browser smoke test
+/node_modules/
+package.json
+package-lock.json
+
 # Screenshots / scratch
 *.jpg
 *.png

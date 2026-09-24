@@ -30,6 +30,43 @@ extern "C" EMSCRIPTEN_KEEPALIVE void museumStart() {
   emscripten_set_main_loop(Frame, 0, true);
 }
 
+// Exposes build counts and player state to the page, for the smoke test.
+extern "C" EMSCRIPTEN_KEEPALIVE int museumRoomCount() {
+  return g_engine.museum().stats().rooms;
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE int museumColliderCount() {
+  return g_engine.museum().stats().colliders;
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE int museumSegmentCount() {
+  return g_engine.museum().stats().segments;
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE int museumPaintingSpotCount() {
+  return g_engine.museum().stats().painting_spots;
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE float museumPlayerX() {
+  return g_engine.player().position().x;
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE float museumPlayerY() {
+  return g_engine.player().position().y;
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE float museumPlayerZ() {
+  return g_engine.player().position().z;
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE float museumEyeY() {
+  return g_engine.player().position().y + museum::player::kCameraEyeOffsetY;
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE int museumOnGround() {
+  return g_engine.player().on_ground() ? 1 : 0;
+}
+
 #else
 
 int main() {

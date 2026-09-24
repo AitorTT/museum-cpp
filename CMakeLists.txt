@@ -21,6 +21,14 @@ set(MUSEUM_SOURCES
   src/platform/window.h
   src/player/player.cpp
   src/render/renderer.cpp
+  src/world/config.h
+  src/world/layout.cpp
+  src/world/layout.h
+  src/world/room_builder.cpp
+  src/world/room_builder.h
+  src/world/collision.h
+  src/world/museum.cpp
+  src/world/museum.h
 )
 
 # Where the prebuilt dependencies land when configured the easy way on Windows.

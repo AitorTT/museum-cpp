@@ -19,6 +19,9 @@ inline float Clamp(float v, float lo, float hi) {
   return v < lo ? lo : (v > hi ? hi : v);
 }
 
+inline float Min(float a, float b) { return a < b ? a : b; }
+inline float Max(float a, float b) { return a > b ? a : b; }
+
 struct Vec3 {
   float x = 0.0f;
   float y = 0.0f;

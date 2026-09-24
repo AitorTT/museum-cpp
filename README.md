@@ -13,7 +13,8 @@ This is the performance-focused successor to the Godot museum and the Three.js
 |---|---|---|
 | 0 | Toolchain, CMake, minimal WebGPU triangle | done |
 | 1 | SDL3 window/input, math, player/camera, resize, native target | web done; native blocked (see below) |
-| 2 | Layout + RoomBuilder port, AABB collision | next |
+| 2 | Layout + RoomBuilder port, merged static geometry, AABB collision | done |
+| 3 | Renderer: materials, textures, sky, tonemapping | next |
 
 ### Batch 1 native build blocker
 
@@ -94,13 +95,58 @@ src/
     window_sdl.cpp    desktop implementation (SDL3)
     window_headless.cpp  web implementation + the JS bridge
   player/
-    player.{h,cpp}    yaw/pitch camera rig, movement, gravity, view matrices
+    player.{h,cpp}    yaw/pitch rig, AABB movement, gravity, view matrices
   render/
     renderer.{h,cpp}  device bring-up, surface, depth target, frame
+  world/
+    config.h          room/door/window dimensions, FloorTopY
+    layout.{h,cpp}    the four floors, door bits, SealVoidDoors()
+    room_builder.{h,cpp}  wall segmentation with door and window cuts
+    collision.h       per-axis AABB resolve (the CharacterBody3D replacement)
+    museum.{h,cpp}    builds every room, corner patches, and the merged mesh
 web/
   shell.html          page, canvas, pointer lock, input bridge
+batch2_check.mjs      Playwright check: counts, spawn, eye height, collision
 ```
 
-Constants in `player/player.h` are ported from the JS museum's `config.ts`,
-which in turn ported them from Godot's `character_body_3d.gd`, so movement and
-spawn match across all three museums.
+## World model
+
+The museum is 4 floors of 10u rooms on a grid, 43 rooms total, matching the JS
+and Godot builds exactly. Every piece of geometry is an axis-aligned box, and
+each box is also a collider, so the collision set is generated from the same
+data that is drawn rather than derived from the mesh.
+
+Collision is per-axis (X, Z, then Y) with a minimum-translation resolve. Two
+details are carried over deliberately because removing either breaks movement:
+
+- On Y, floors resolve **last**, so a wall's downward push cannot override the
+  floor supporting the player (that ordering causes an order-dependent death
+  spiral).
+- A resolve only moves along the current pass's axis when that axis is the box's
+  minimal-penetration axis, which is what stops a full-height wall from shoving
+  the player through the floor while they walk beside it.
+
+Movement is substepped so no slice exceeds 0.08 m, well under the thinnest
+collider (0.15 m slabs and walls), so nothing can be tunnelled through at any
+speed.
+
+`room_builder.cpp` reproduces a precedence quirk from the JS source
+(`doorXP ? 1 : 0 + ...` binds as `doorXP ? 1 : (0 + ...)`), so painting
+placement matches the JS museum, which in turn matched Godot.
+
+Verified against the JS museum's own `smoke.mjs` expectations: 43 rooms, spawn
+at (-3.129, -8.900), and eye height 1.769 m above the feet.
+
+Constants in `player/player.h` and `world/config.h` are ported from the JS
+museum's `config.ts`, which in turn ported them from Godot's
+`character_body_3d.gd`, so movement and spawn match across all three museums.
+
+## Testing
+
+`batch2_check.mjs` boots the web build in headless Edge via Playwright and
+checks the build counts, spawn point, eye height, walking, and wall collision:
+
+```sh
+npm install --no-save playwright
+node batch2_check.mjs        # expects the build served on :8000
+```

@@ -1,12 +1,12 @@
-// The engine: owns the platform, the player and the renderer, and runs the
-// loop. Deliberately small. The museum world in Batch 2 plugs in between
-// Update and Render without this file growing much.
+// The engine: owns the museum, the platform, the player and the renderer, and
+// runs the loop.
 #pragma once
 
 #include "core/clock.h"
 #include "platform/window.h"
 #include "player/player.h"
 #include "render/renderer.h"
+#include "world/museum.h"
 
 namespace museum {
 
@@ -16,19 +16,21 @@ class Engine {
 
   bool Initialize(const char* title, std::uint32_t width, std::uint32_t height);
 
-  // One frame: input -> simulation -> render. Called by the platform loop
-  // (SDL3's while-loop on desktop, requestAnimationFrame on the web).
+  // One frame: input -> simulation -> render.
   void Frame();
 
   bool quit_requested() const { return window_.quit_requested(); }
   bool ready() const { return renderer_.ready(); }
-
-  // True once Initialize has returned successfully.
   bool running() const { return initialized_; }
+
+  const world::Museum& museum() const { return museum_; }
+  const player::Player& player() const { return player_; }
+  const render::Renderer& renderer() const { return renderer_; }
 
  private:
   void HandleResize();
 
+  world::Museum museum_;
   platform::Window window_;
   core::Clock clock_;
   player::Player player_;

@@ -5,12 +5,29 @@
 namespace museum {
 
 bool Engine::Initialize(const char* title, std::uint32_t width, std::uint32_t height) {
+  museum_.Build();
+  const world::MuseumStats& stats = museum_.stats();
+  std::printf(
+      "Museum: %d rooms, %d segments, %d colliders, %d painting spots, "
+      "y %.1f..%.1f\n",
+      stats.rooms, stats.segments, stats.colliders, stats.painting_spots,
+      stats.min_y, stats.max_y);
+
+  world::Mesh mesh;
+  museum_.EmitMesh(mesh);
+  std::printf("Museum: mesh %zu vertices, %zu indices\n", mesh.vertices.size(),
+              mesh.indices.size());
+
   if (!window_.Create(title, width, height)) {
     return false;
   }
-  if (!renderer_.Initialize(&window_)) {
+
+  player_.SetWorld(&museum_.collision());
+
+  if (!renderer_.Initialize(&window_, mesh)) {
     return false;
   }
+
   initialized_ = true;
   return true;
 }

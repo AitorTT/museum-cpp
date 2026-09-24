@@ -1,8 +1,9 @@
 // WebGPU renderer: device bring-up, a configurable surface, and the frame.
 //
-// Batch 1 renders a grid that scrolls with the camera, which is a frame-rate
-// and resize check that doubles as proof the view/projection matrices are
-// right: the grid must stay locked to the world as you walk and turn.
+// Batch 2 renders the museum's merged static geometry with a simple directional
+// fill light. The real lighting model arrives in Batch 4; for now the goal is
+// that the rooms read correctly in perspective and the collider set matches
+// what is drawn.
 #pragma once
 
 #include <cstdint>
@@ -12,6 +13,7 @@
 #include "core/math.h"
 #include "platform/window.h"
 #include "player/player.h"
+#include "world/museum.h"
 
 namespace museum::render {
 
@@ -23,14 +25,9 @@ class Renderer {
   Renderer(const Renderer&) = delete;
   Renderer& operator=(const Renderer&) = delete;
 
-  // Brings up instance -> adapter -> device -> surface. Web and native differ
-  // only in how the surface is obtained.
-  bool Initialize(platform::Window* window);
+  bool Initialize(platform::Window* window, const world::Mesh& mesh);
 
-  // Called when the window or canvas changed size.
   void Resize(std::uint32_t width, std::uint32_t height);
-
-  // Records and submits one frame.
   void RenderFrame(const player::ViewMatrices& matrices);
 
   bool ready() const { return ready_; }
@@ -40,10 +37,9 @@ class Renderer {
   void CreateDepthTarget();
   bool CreateSurface();
   void ConfigureSurface();
-
-  // Blocks until an async WebGPU callback has fired. Web: yields to the
-  // browser event loop. Native: pumps Dawn's event queue.
   bool WaitFor(bool& flag);
+
+  void UploadMesh(const world::Mesh& mesh);
 
   platform::Window* window_ = nullptr;
 
@@ -60,6 +56,10 @@ class Renderer {
   wgpu::BindGroup uniform_bind_group_;
   wgpu::Texture depth_texture_;
   wgpu::TextureView depth_view_;
+
+  wgpu::Buffer vertex_buffer_;
+  wgpu::Buffer index_buffer_;
+  std::uint32_t index_count_ = 0;
 
   std::uint32_t width_ = 0;
   std::uint32_t height_ = 0;
