@@ -5,24 +5,118 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
 <title>Museum</title>
 <style>
-  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #23272f; }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    overflow: hidden; background: #23272f;
+    font-family: system-ui, sans-serif; color: #c8d0dc;
+  }
   #canvas { display: block; width: 100vw; height: 100vh; outline: none; }
+
+  #overlay {
+    position: fixed; inset: 0; display: flex;
+    align-items: center; justify-content: center;
+    background: rgba(12, 14, 18, 0.85); cursor: pointer;
+  }
+  #overlay.hidden { display: none; }
+  #overlay-inner { text-align: center; }
+  #overlay h1 { font-weight: 600; letter-spacing: 0.08em; font-size: 22px; }
+  #overlay p { font-size: 13px; opacity: 0.7; }
 </style>
 </head>
 <body>
 <canvas id="canvas" tabindex="-1"></canvas>
-<script>
-  // Keep the drawing buffer in step with the CSS size until the renderer
-  // handles resize itself (Batch 1).
-  function fitCanvas() {
-    var c = document.getElementById('canvas');
+
+<div id="overlay">
+  <div id="overlay-inner">
+    <h1>MUSEUM</h1>
+    <p>Click to enter &mdash; WASD to move, mouse to look</p>
+  </div>
+</div>
+
+<script type="text/javascript">
+  // Must exist before the Emscripten runtime script runs, because Emscripten
+  // merges its exports into this object.
+  var Module = {
+    onRuntimeInitialized: function () {
+      resizeCanvas();
+      _museumStart();
+    },
+  };
+
+  var canvas = document.getElementById('canvas');
+  var overlay = document.getElementById('overlay');
+
+  // The C++ platform layer installs these; they defer to the exported symbols.
+  Module.museumApplyLook = function (dx, dy) {
+    if (Module._museumApplyLook) Module._museumApplyLook(dx, dy);
+  };
+  Module.museumSetPointerLocked = function (locked) {
+    if (Module._museumSetPointerLocked) {
+      Module._museumSetPointerLocked(locked ? 1 : 0);
+    }
+  };
+
+  // Match the drawing buffer to the CSS size and tell the engine, so the
+  // WebGPU surface is reconfigured rather than stretched.
+  function resizeCanvas() {
     var dpr = Math.min(window.devicePixelRatio || 1, 2);
-    c.width = Math.floor(window.innerWidth * dpr);
-    c.height = Math.floor(window.innerHeight * dpr);
+    canvas.width = Math.floor(window.innerWidth * dpr);
+    canvas.height = Math.floor(window.innerHeight * dpr);
+    if (Module._museumNotifyResize) {
+      Module._museumNotifyResize(canvas.width, canvas.height);
+    }
   }
-  window.addEventListener('resize', fitCanvas);
-  fitCanvas();
+
+  overlay.addEventListener('click', function () {
+    overlay.classList.add('hidden');
+    // Ignore a rejected lock: the engine still needs to run, and some
+    // embedding contexts never grant it.
+    var lock = canvas.requestPointerLock();
+    if (lock && typeof lock.catch === 'function') {
+      lock.catch(function () {});
+    }
+  });
+
+  document.addEventListener('pointerlockchange', function () {
+    Module.museumSetPointerLocked(!!document.pointerLockElement);
+    if (!document.pointerLockElement) {
+      overlay.classList.remove('hidden');
+    }
+  });
+
+  document.addEventListener('pointermove', function (e) {
+    if (document.pointerLockElement) {
+      Module.museumApplyLook(e.movementX || 0, e.movementY || 0);
+    }
+  });
+
+  // DOM code -> index into the C++ table in window_headless.cpp. Passing a
+  // number avoids marshalling strings across the WASM boundary every keypress.
+  var keyCodes = {
+    KeyW: 1, KeyA: 2, KeyS: 3, KeyD: 4, KeyQ: 5, KeyE: 6,
+    Space: 7, ShiftLeft: 8, Escape: 9, F1: 10,
+    ArrowUp: 11, ArrowDown: 12, ArrowLeft: 13, ArrowRight: 14,
+  };
+
+  document.addEventListener('keydown', function (e) {
+    var code = keyCodes[e.code];
+    if (code && Module._museumKeyCode) {
+      Module._museumKeyCode(code, 1);
+      e.preventDefault();
+    }
+  });
+
+  document.addEventListener('keyup', function (e) {
+    var code = keyCodes[e.code];
+    if (code && Module._museumKeyCode) {
+      Module._museumKeyCode(code, 0);
+      e.preventDefault();
+    }
+  });
+
+  window.addEventListener('resize', resizeCanvas);
 </script>
+
 {{{ SCRIPT }}}
 </body>
 </html>

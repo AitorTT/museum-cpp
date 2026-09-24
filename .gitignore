@@ -1,8 +1,17 @@
 # Build output
 /build-web/
+/build-native/
 /build/
 build-web/
+build-native/
 build/
+
+# Prebuilt dependencies (large; see README for how to fetch them)
+/.deps/
+
+# Screenshots / scratch
+*.jpg
+*.png
 
 # Emscripten output (mirrors of the build dir, just in case)
 *.wasm

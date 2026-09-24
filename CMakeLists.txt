@@ -9,23 +9,85 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-add_executable(museum src/main.cpp)
+# Release with symbols; a museum is a long-running interactive app, so a crash
+# in a release build is the interesting one to be able to read.
+set(CMAKE_CXX_FLAGS_RELEASE "-O2 -g -DNDEBUG")
+
+set(MUSEUM_SOURCES
+  src/main.cpp
+  src/engine.cpp
+  src/core/clock.h
+  src/core/math.h
+  src/platform/window.h
+  src/player/player.cpp
+  src/render/renderer.cpp
+)
+
+# Where the prebuilt dependencies land when configured the easy way on Windows.
+# Both are optional: point CMAKE_PREFIX_PATH at them, or drop them in .deps/.
+set(MUSEUM_DEPS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.deps" CACHE PATH
+    "Directory holding prebuilt Dawn/SDL3 packages")
 
 if(EMSCRIPTEN)
-  # emdawnwebgpu provides <webgpu/webgpu_cpp.h> and links the WebGPU bindings.
-  # It replaces the older -sUSE_WEBGPU flag (Emscripten 4.0.10+).
+  # --------------------------------------------------------------------------
+  # Web: Emscripten + emdawnwebgpu, which provides <webgpu/webgpu_cpp.h>.
+  # Replaces the older -sUSE_WEBGPU flag (Emscripten 4.0.10+).
+  # --------------------------------------------------------------------------
+  add_executable(museum ${MUSEUM_SOURCES} src/platform/window_headless.cpp)
+  target_compile_definitions(museum PRIVATE MUSEUM_WEB)
+  target_include_directories(museum PRIVATE src)
+
   target_compile_options(museum PRIVATE --use-port=emdawnwebgpu)
   target_link_options(museum PRIVATE
     --use-port=emdawnwebgpu
     -sALLOW_MEMORY_GROWTH=1
     -sEXIT_RUNTIME=0
+    -sASYNCIFY=1                 # lets Initialize await adapter/device
+    -sASYNCIFY_IMPORTS=["emscripten_sleep"]
     --shell-file "${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
   )
-  # Emit a runnable page instead of a bare .js.
   set_target_properties(museum PROPERTIES SUFFIX ".html")
+
 else()
-  message(FATAL_ERROR
-    "Native target is not wired yet (Batch 1). It needs SDL3 plus a WebGPU "
-    "implementation (Dawn or wgpu-native). Configure the web build with "
-    "emcmake instead.")
+  # --------------------------------------------------------------------------
+  # Native: SDL3 + a WebGPU implementation (Dawn or wgpu-native).
+  # --------------------------------------------------------------------------
+  add_executable(museum ${MUSEUM_SOURCES} src/platform/window_sdl.cpp)
+  target_compile_definitions(museum PRIVATE MUSEUM_USE_SDL)
+  target_include_directories(museum PRIVATE src)
+
+  find_package(SDL3 CONFIG QUIET
+    HINTS "${MUSEUM_DEPS_DIR}/sdl3-mingw/SDL3/x86_64-w64-mingw32")
+  if(NOT SDL3_FOUND)
+    message(FATAL_ERROR
+      "SDL3 not found. Download SDL3-devel-*-mingw.zip into .deps/sdl3-mingw/ "
+      "(see README) or set CMAKE_PREFIX_PATH.")
+  endif()
+  target_link_libraries(museum PRIVATE SDL3::SDL3)
+
+  # Dawn ships a CMake package and a static webgpu_dawn library. Its exported
+  # target carries MSVC-style flags (-ignore:4221, user32.lib) that MinGW's
+  # linker rejects, so import it as a plain imported target instead of using
+  # the package's link interface.
+  set(_dawn_dir "${MUSEUM_DEPS_DIR}/dawn")
+  if(NOT EXISTS "${_dawn_dir}/include/webgpu/webgpu_cpp.h")
+    message(FATAL_ERROR
+      "Dawn not found at ${_dawn_dir}. Download a Dawn windows-latest-Release "
+      "build and extract it there (see README).")
+  endif()
+
+  add_library(dawn_webgpu STATIC IMPORTED GLOBAL)
+  set_target_properties(dawn_webgpu PROPERTIES
+    IMPORTED_LOCATION "${_dawn_dir}/lib/webgpu_dawn.lib"
+    INTERFACE_INCLUDE_DIRECTORIES "${_dawn_dir}/include")
+  target_link_libraries(museum PRIVATE dawn_webgpu)
+
+  # Dawn's static library needs the platform graphics + threading libraries.
+  if(WIN32)
+    target_link_libraries(museum PRIVATE d3d12 dxgi dxguid user32 gdi32
+                                       ole32 windowscodecs onecore_apiset
+                                       dbghelp)
+  endif()
+  find_package(Threads REQUIRED)
+  target_link_libraries(museum PRIVATE Threads::Threads)
 endif()
