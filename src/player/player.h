@@ -68,6 +68,10 @@ class Player {
   // Instant repositioning (teleporter pads); keeps the current view angles.
   void TeleportTo(float x, float y, float z);
 
+  // Sets position and view angles at once. Used by teleporters, the elevator,
+  // and the automated screenshot pass.
+  void SetPose(float x, float y, float z, float yaw, float pitch);
+
   // Returns to the spawn point.
   void Respawn();
 

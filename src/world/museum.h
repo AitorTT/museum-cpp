@@ -25,6 +25,9 @@ struct Vertex {
   float nz = 0.0f;
   float u = 0.0f;
   float v = 0.0f;
+  // 1.0 for floor triangles, 0.0 otherwise. Lets one draw call carry both
+  // materials without splitting into two pipelines.
+  float is_floor = 0.0f;
 };
 
 struct Mesh {

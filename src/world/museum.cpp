@@ -23,6 +23,12 @@ void AppendBox(const SegmentBox& box, Mesh& mesh) {
   const float z0 = box.MinZ();
   const float z1 = box.MaxZ();
 
+  // Floors get the floor material and per-metre texture tiling; walls get a
+  // flat colour. Ceilings behave as walls.
+  const bool is_floor_box = box.kind == SegmentKind::kFloor;
+  const float floor_flag = is_floor_box ? 1.0f : 0.0f;
+  const float uv_scale = is_floor_box ? 2.0f : 1.0f;
+
   // Six faces, each with its own normal and a 0..1 UV square.
   struct Face {
     float nx, ny, nz;
@@ -45,7 +51,7 @@ void AppendBox(const SegmentBox& box, Mesh& mesh) {
 
   // UVs scaled so the texture tiles per world unit on the floor, matching the
   // JS museum's uv1_scale of 2.
-  const float u_scale = box.kind == SegmentKind::kFloor ? 2.0f : 1.0f;
+  const float u_scale = uv_scale;
 
   for (const Face& face : faces) {
     const std::uint32_t base = static_cast<std::uint32_t>(mesh.vertices.size());
@@ -75,6 +81,7 @@ void AppendBox(const SegmentBox& box, Mesh& mesh) {
       vertex.nz = face.nz;
       vertex.u = uvs[i][0] * u_extent * u_scale;
       vertex.v = uvs[i][1] * v_extent * u_scale;
+      vertex.is_floor = floor_flag;
       mesh.vertices.push_back(vertex);
     }
 

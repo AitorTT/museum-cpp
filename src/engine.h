@@ -10,6 +10,15 @@
 
 namespace museum {
 
+// Where textures live. On the web the assets tree is packaged into the
+// Emscripten virtual filesystem at "/assets"; natively it is a disk path
+// relative to the working directory.
+#ifdef __EMSCRIPTEN__
+inline constexpr const char* kAssetsDir = "/assets";
+#else
+inline constexpr const char* kAssetsDir = "assets";
+#endif
+
 class Engine {
  public:
   Engine() = default;
@@ -25,6 +34,7 @@ class Engine {
 
   const world::Museum& museum() const { return museum_; }
   const player::Player& player() const { return player_; }
+  player::Player& mutable_player() { return player_; }
   const render::Renderer& renderer() const { return renderer_; }
 
  private:

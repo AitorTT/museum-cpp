@@ -18,13 +18,15 @@ bool Engine::Initialize(const char* title, std::uint32_t width, std::uint32_t he
   std::printf("Museum: mesh %zu vertices, %zu indices\n", mesh.vertices.size(),
               mesh.indices.size());
 
+  const world::SkyMesh sky = world::BuildSkyDome();
+
   if (!window_.Create(title, width, height)) {
     return false;
   }
 
   player_.SetWorld(&museum_.collision());
 
-  if (!renderer_.Initialize(&window_, mesh)) {
+  if (!renderer_.Initialize(&window_, mesh, sky, kAssetsDir)) {
     return false;
   }
 

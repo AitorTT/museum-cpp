@@ -1,82 +1,52 @@
 #include "render/renderer.h"
 
 #include <cstdio>
-#include <cstring>
-#include <vector>
+
+#include <webgpu/webgpu_cpp.h>
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
-#include <emscripten/html5.h>
 #endif
+
+#include "render/shaders.h"
+#include "render/texture.h"
 
 namespace museum::render {
 namespace {
 
-// Flat-ish shading with a fill light, enough to read the architecture. Batch 4
-// swaps this shader for the real lighting model.
-//
-// The colours are authored in linear space to match the JS museum's config
-// (walls 0.298, 0, 0.506) so the two builds look the same at this stage.
-const char kSceneShader[] = R"(
-struct Uniforms {
-  view_proj : mat4x4<f32>,
-  camera_pos : vec4<f32>,
-  wall_color : vec4<f32>,
-  floor_color : vec4<f32>,
-  light_dir : vec4<f32>,
+// Uniform layouts must match the WGSL structs in shaders.h exactly.
+struct SceneUniforms {
+  math::Mat4 view_proj;    // 64
+  float camera_pos[4];     // 16
+  float wall_color[4];     // 16
+  float light_dir[4];      // 16
+  float sky_top[4];        // 16
+  float sky_horizon[4];    // 16
+  float sky_bottom[4];     // 16
+  float fog[4];            // 16
+  float tonemap[4];        // 16
 };
-@group(0) @binding(0) var<uniform> u : Uniforms;
+static_assert(sizeof(SceneUniforms) == 64 + 8 * 16);
 
-struct VertexIn {
-  @location(0) position : vec3<f32>,
-  @location(1) normal : vec3<f32>,
-  @location(2) uv : vec2<f32>,
+struct SkyUniforms {
+  float top[4];
+  float horizon[4];
+  float bottom[4];
+  float tonemap[4];
 };
+static_assert(sizeof(SkyUniforms) == 4 * 16);
 
-struct VertexOut {
-  @builtin(position) position : vec4<f32>,
-  @location(0) normal : vec3<f32>,
-  @location(1) world_pos : vec3<f32>,
-  @location(2) uv : vec2<f32>,
-};
+// sRGB hex from the JS museum's config.ts, as 0..1 floats.
+constexpr float kSkyTop[3] = {0x2b / 255.0f, 0x4a / 255.0f, 0x7f / 255.0f};
+constexpr float kSkyHorizon[3] = {0xb5 / 255.0f, 0xc7 / 255.0f, 0xda / 255.0f};
+constexpr float kSkyBottom[3] = {0x23 / 255.0f, 0x27 / 255.0f, 0x2f / 255.0f};
 
-@vertex
-fn vs_main(in : VertexIn) -> VertexOut {
-  var out : VertexOut;
-  out.position = u.view_proj * vec4<f32>(in.position, 1.0);
-  out.normal = in.normal;
-  out.world_pos = in.position;
-  out.uv = in.uv;
-  return out;
-}
-
-@fragment
-fn fs_main(in : VertexOut) -> @location(0) vec4<f32> {
-  // Floors are the -Y-facing boxes; detect by normal so both merged ranges can
-  // share one draw call without a per-vertex flag.
-  let is_floor = select(0.0, 1.0, in.normal.y > 0.5 && in.world_pos.y < 0.01);
-  let base = select(u.wall_color.rgb, u.floor_color.rgb, is_floor > 0.5);
-
-  let n = normalize(in.normal);
-  // Hemisphere-ish fill: a key light plus a floor bounce, matching the JS
-  // museum's baked look closely enough to compare them.
-  let key = max(dot(n, normalize(u.light_dir.xyz)), 0.0);
-  let ambient = 0.35 + 0.25 * max(n.y, 0.0);
-  let lit = base * (ambient + key * 0.9);
-
-  return vec4<f32>(lit, 1.0);
-}
-)";
-
-// Must match the WGSL struct: mat4 (64) + four padded vec4s (64).
-struct Uniforms {
-  math::Mat4 view_proj;
-  float camera_pos[4];
-  float wall_color[4];
-  float floor_color[4];
-  float light_dir[4];
-};
-static_assert(sizeof(Uniforms) == 128, "uniform layout must match the WGSL struct");
+// The JS museum has no tonemapper: it writes linear albedo through to sRGB
+// directly. Ours runs ACES, which darkens mid-tones, so exposure compensates.
+// 1.0 was verified against the JS build's own wall colour: the lit wall lands
+// at sRGB (161, 0, 195) here versus (148, 0, 189) there, a close match. Raising
+// it oversaturates the walls toward magenta, which is the opposite of the goal.
+constexpr float kExposure = 1.0f;
 
 void LogString(const wgpu::StringView& message) {
   if (message.length) {
@@ -92,7 +62,8 @@ Renderer::~Renderer() {
   }
 }
 
-bool Renderer::Initialize(platform::Window* window, const world::Mesh& mesh) {
+bool Renderer::Initialize(platform::Window* window, const world::Mesh& museum_mesh,
+                          const world::SkyMesh& sky_mesh, const char* assets_dir) {
   window_ = window;
   width_ = window->width();
   height_ = window->height();
@@ -130,6 +101,15 @@ bool Renderer::Initialize(platform::Window* window, const world::Mesh& mesh) {
         std::printf("UncapturedError (%d): ", static_cast<int>(type));
         LogString(message);
       });
+  // Async pipeline creation means the shader-compile error surfaces here rather
+  // than at CreateRenderPipeline, so it must be captured too.
+  device_desc.SetDeviceLostCallback(
+      wgpu::CallbackMode::AllowSpontaneous,
+      [](const wgpu::Device&, wgpu::DeviceLostReason reason,
+         wgpu::StringView message) {
+        std::printf("DeviceLost (%d): ", static_cast<int>(reason));
+        LogString(message);
+      });
   adapter_.RequestDevice(
       &device_desc, wgpu::CallbackMode::AllowSpontaneous,
       [&](wgpu::RequestDeviceStatus status, wgpu::Device device,
@@ -154,12 +134,18 @@ bool Renderer::Initialize(platform::Window* window, const world::Mesh& mesh) {
   }
 
   ConfigureSurface();
-  BuildPipeline();
+  CreateSampler();
+  LoadFloorTexture(assets_dir);
+  BuildScenePipeline();
+  BuildSkyPipeline();
   CreateDepthTarget();
-  UploadMesh(mesh);
+
+  UploadMesh(museum_mesh, mesh_vertices_, mesh_indices_, mesh_index_count_);
+  UploadMesh(sky_mesh, sky_vertices_, sky_indices_, sky_index_count_);
 
   ready_ = true;
-  std::printf("Renderer: ready, %ux%u, %u indices\n", width_, height_, index_count_);
+  std::printf("Renderer: ready, %ux%u, %u museum indices, %u sky indices\n", width_,
+              height_, mesh_index_count_, sky_index_count_);
   return true;
 }
 
@@ -222,23 +208,59 @@ void Renderer::ConfigureSurface() {
   surface_configured_ = true;
 }
 
-void Renderer::BuildPipeline() {
+void Renderer::CreateSampler() {
+  wgpu::SamplerDescriptor sampler_desc{};
+  sampler_desc.addressModeU = wgpu::AddressMode::Repeat;
+  sampler_desc.addressModeV = wgpu::AddressMode::Repeat;
+  sampler_desc.addressModeW = wgpu::AddressMode::Repeat;
+  sampler_desc.magFilter = wgpu::FilterMode::Linear;
+  sampler_desc.minFilter = wgpu::FilterMode::Linear;
+  sampler_desc.mipmapFilter = wgpu::MipmapFilterMode::Linear;
+  sampler_desc.maxAnisotropy = 8;
+  floor_sampler_ = device_.CreateSampler(&sampler_desc);
+}
+
+void Renderer::LoadFloorTexture(const char* assets_dir) {
+  const std::string path = std::string(assets_dir) + "/textures/floor_wall1.jpg";
+  const Image image = LoadImage(path);
+  if (image.empty()) {
+    std::printf("Renderer: floor texture missing at %s, using flat colour\n",
+                path.c_str());
+    return;
+  }
+
+  floor_texture_ =
+      CreateTextureFromImage(device_, queue_, image, /*srgb=*/true, /*repeat=*/true);
+  if (floor_texture_) {
+    floor_view_ = floor_texture_.CreateView();
+    std::printf("Renderer: floor texture %dx%d\n", image.width, image.height);
+  }
+}
+
+void Renderer::BuildScenePipeline() {
   wgpu::ShaderSourceWGSL wgsl{};
-  wgsl.code = kSceneShader;
+  wgsl.code = shaders::kSceneShader;
 
   wgpu::ShaderModuleDescriptor module_desc{};
   module_desc.nextInChain = &wgsl;
   wgpu::ShaderModule module = device_.CreateShaderModule(&module_desc);
 
-  wgpu::BindGroupLayoutEntry uniform_entry{};
-  uniform_entry.binding = 0;
-  uniform_entry.visibility = wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment;
-  uniform_entry.buffer.type = wgpu::BufferBindingType::Uniform;
-  uniform_entry.buffer.minBindingSize = sizeof(Uniforms);
+  wgpu::BindGroupLayoutEntry entries[3] = {};
+  entries[0].binding = 0;
+  entries[0].visibility = wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment;
+  entries[0].buffer.type = wgpu::BufferBindingType::Uniform;
+  entries[0].buffer.minBindingSize = sizeof(SceneUniforms);
+  entries[1].binding = 1;
+  entries[1].visibility = wgpu::ShaderStage::Fragment;
+  entries[1].texture.sampleType = wgpu::TextureSampleType::Float;
+  entries[1].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+  entries[2].binding = 2;
+  entries[2].visibility = wgpu::ShaderStage::Fragment;
+  entries[2].sampler.type = wgpu::SamplerBindingType::Filtering;
 
   wgpu::BindGroupLayoutDescriptor layout_desc{};
-  layout_desc.entryCount = 1;
-  layout_desc.entries = &uniform_entry;
+  layout_desc.entryCount = 3;
+  layout_desc.entries = entries;
   wgpu::BindGroupLayout bind_group_layout = device_.CreateBindGroupLayout(&layout_desc);
 
   wgpu::PipelineLayoutDescriptor pipeline_layout_desc{};
@@ -260,7 +282,7 @@ void Renderer::BuildPipeline() {
   depth_stencil.depthWriteEnabled = true;
   depth_stencil.depthCompare = wgpu::CompareFunction::Less;
 
-  wgpu::VertexAttribute attributes[3] = {};
+  wgpu::VertexAttribute attributes[4] = {};
   attributes[0].shaderLocation = 0;
   attributes[0].format = wgpu::VertexFormat::Float32x3;
   attributes[0].offset = offsetof(world::Vertex, px);
@@ -270,11 +292,14 @@ void Renderer::BuildPipeline() {
   attributes[2].shaderLocation = 2;
   attributes[2].format = wgpu::VertexFormat::Float32x2;
   attributes[2].offset = offsetof(world::Vertex, u);
+  attributes[3].shaderLocation = 3;
+  attributes[3].format = wgpu::VertexFormat::Float32;
+  attributes[3].offset = offsetof(world::Vertex, is_floor);
 
   wgpu::VertexBufferLayout vertex_layout{};
   vertex_layout.arrayStride = sizeof(world::Vertex);
   vertex_layout.stepMode = wgpu::VertexStepMode::Vertex;
-  vertex_layout.attributeCount = 3;
+  vertex_layout.attributeCount = 4;
   vertex_layout.attributes = attributes;
 
   wgpu::RenderPipelineDescriptor pipeline_desc{};
@@ -285,31 +310,118 @@ void Renderer::BuildPipeline() {
   pipeline_desc.vertex.buffers = &vertex_layout;
   pipeline_desc.fragment = &fragment;
   pipeline_desc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
-  // The museum is viewed from inside, so no face culling: a culled back face
-  // here would punch a hole in the wall behind the player.
+  // The museum is viewed from inside, so no face culling.
   pipeline_desc.primitive.cullMode = wgpu::CullMode::None;
   pipeline_desc.depthStencil = &depth_stencil;
-  pipeline_ = device_.CreateRenderPipeline(&pipeline_desc);
+  scene_pipeline_ = device_.CreateRenderPipeline(&pipeline_desc);
+  scene_pipeline_.SetLabel("ScenePipeline");
 
   wgpu::BufferDescriptor buffer_desc{};
   buffer_desc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
-  buffer_desc.size = sizeof(Uniforms);
-  uniform_buffer_ = device_.CreateBuffer(&buffer_desc);
+  buffer_desc.size = sizeof(SceneUniforms);
+  scene_uniforms_ = device_.CreateBuffer(&buffer_desc);
+
+  wgpu::BindGroupEntry bind_entries[3] = {};
+  bind_entries[0].binding = 0;
+  bind_entries[0].buffer = scene_uniforms_;
+  bind_entries[0].offset = 0;
+  bind_entries[0].size = sizeof(SceneUniforms);
+  bind_entries[1].binding = 1;
+  bind_entries[1].textureView = floor_view_;
+  bind_entries[2].binding = 2;
+  bind_entries[2].sampler = floor_sampler_;
+
+  wgpu::BindGroupDescriptor bind_group_desc{};
+  bind_group_desc.layout = bind_group_layout;
+  bind_group_desc.entryCount = 3;
+  bind_group_desc.entries = bind_entries;
+  scene_bind_group_ = device_.CreateBindGroup(&bind_group_desc);
+}
+
+void Renderer::BuildSkyPipeline() {
+  wgpu::ShaderSourceWGSL wgsl{};
+  wgsl.code = shaders::kSkyShader;
+
+  wgpu::ShaderModuleDescriptor module_desc{};
+  module_desc.nextInChain = &wgsl;
+  wgpu::ShaderModule module = device_.CreateShaderModule(&module_desc);
+
+  wgpu::BindGroupLayoutEntry entry{};
+  entry.binding = 0;
+  entry.visibility = wgpu::ShaderStage::Fragment;
+  entry.buffer.type = wgpu::BufferBindingType::Uniform;
+  entry.buffer.minBindingSize = sizeof(SkyUniforms);
+
+  wgpu::BindGroupLayoutDescriptor layout_desc{};
+  layout_desc.entryCount = 1;
+  layout_desc.entries = &entry;
+  wgpu::BindGroupLayout bind_group_layout = device_.CreateBindGroupLayout(&layout_desc);
+
+  wgpu::PipelineLayoutDescriptor pipeline_layout_desc{};
+  pipeline_layout_desc.bindGroupLayoutCount = 1;
+  pipeline_layout_desc.bindGroupLayouts = &bind_group_layout;
+  wgpu::PipelineLayout pipeline_layout = device_.CreatePipelineLayout(&pipeline_layout_desc);
+
+  wgpu::ColorTargetState color_target{};
+  color_target.format = surface_format_;
+
+  wgpu::FragmentState fragment{};
+  fragment.module = module;
+  fragment.entryPoint = "fs_main";
+  fragment.targetCount = 1;
+  fragment.targets = &color_target;
+
+  // The dome writes colour but no depth, and tests against nothing: it is
+  // always behind the world.
+  wgpu::DepthStencilState depth_stencil{};
+  depth_stencil.format = depth_format_;
+  depth_stencil.depthWriteEnabled = false;
+  depth_stencil.depthCompare = wgpu::CompareFunction::Always;
+
+  wgpu::VertexAttribute attribute{};
+  attribute.shaderLocation = 0;
+  attribute.format = wgpu::VertexFormat::Float32x3;
+  attribute.offset = offsetof(world::Vertex, px);
+
+  wgpu::VertexBufferLayout vertex_layout{};
+  vertex_layout.arrayStride = sizeof(world::Vertex);
+  vertex_layout.stepMode = wgpu::VertexStepMode::Vertex;
+  vertex_layout.attributeCount = 1;
+  vertex_layout.attributes = &attribute;
+
+  wgpu::RenderPipelineDescriptor pipeline_desc{};
+  pipeline_desc.layout = pipeline_layout;
+  pipeline_desc.vertex.module = module;
+  pipeline_desc.vertex.entryPoint = "vs_main";
+  pipeline_desc.vertex.bufferCount = 1;
+  pipeline_desc.vertex.buffers = &vertex_layout;
+  pipeline_desc.fragment = &fragment;
+  pipeline_desc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+  pipeline_desc.primitive.cullMode = wgpu::CullMode::None;
+  pipeline_desc.depthStencil = &depth_stencil;
+  sky_pipeline_ = device_.CreateRenderPipeline(&pipeline_desc);
+  sky_pipeline_.SetLabel("SkyPipeline");
+
+  wgpu::BufferDescriptor buffer_desc{};
+  buffer_desc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
+  buffer_desc.size = sizeof(SkyUniforms);
+  sky_uniforms_ = device_.CreateBuffer(&buffer_desc);
 
   wgpu::BindGroupEntry bind_entry{};
   bind_entry.binding = 0;
-  bind_entry.buffer = uniform_buffer_;
+  bind_entry.buffer = sky_uniforms_;
   bind_entry.offset = 0;
-  bind_entry.size = sizeof(Uniforms);
+  bind_entry.size = sizeof(SkyUniforms);
 
   wgpu::BindGroupDescriptor bind_group_desc{};
   bind_group_desc.layout = bind_group_layout;
   bind_group_desc.entryCount = 1;
   bind_group_desc.entries = &bind_entry;
-  uniform_bind_group_ = device_.CreateBindGroup(&bind_group_desc);
+  sky_bind_group_ = device_.CreateBindGroup(&bind_group_desc);
 }
 
-void Renderer::UploadMesh(const world::Mesh& mesh) {
+void Renderer::UploadMesh(const world::Mesh& mesh, wgpu::Buffer& vertex_buffer,
+                          wgpu::Buffer& index_buffer, std::uint32_t& index_count) {
   if (mesh.vertices.empty() || mesh.indices.empty()) {
     return;
   }
@@ -322,16 +434,16 @@ void Renderer::UploadMesh(const world::Mesh& mesh) {
   wgpu::BufferDescriptor vertex_desc{};
   vertex_desc.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
   vertex_desc.size = vertex_bytes;
-  vertex_buffer_ = device_.CreateBuffer(&vertex_desc);
-  queue_.WriteBuffer(vertex_buffer_, 0, mesh.vertices.data(), vertex_bytes);
+  vertex_buffer = device_.CreateBuffer(&vertex_desc);
+  queue_.WriteBuffer(vertex_buffer, 0, mesh.vertices.data(), vertex_bytes);
 
   wgpu::BufferDescriptor index_desc{};
   index_desc.usage = wgpu::BufferUsage::Index | wgpu::BufferUsage::CopyDst;
   index_desc.size = index_bytes;
-  index_buffer_ = device_.CreateBuffer(&index_desc);
-  queue_.WriteBuffer(index_buffer_, 0, mesh.indices.data(), index_bytes);
+  index_buffer = device_.CreateBuffer(&index_desc);
+  queue_.WriteBuffer(index_buffer, 0, mesh.indices.data(), index_bytes);
 
-  index_count_ = static_cast<std::uint32_t>(mesh.indices.size());
+  index_count = static_cast<std::uint32_t>(mesh.indices.size());
 }
 
 void Renderer::CreateDepthTarget() {
@@ -360,30 +472,51 @@ void Renderer::RenderFrame(const player::ViewMatrices& matrices) {
     return;
   }
 
-  Uniforms uniforms{};
-  uniforms.view_proj = matrices.view_projection;
-  uniforms.camera_pos[0] = matrices.camera_position.x;
-  uniforms.camera_pos[1] = matrices.camera_position.y;
-  uniforms.camera_pos[2] = matrices.camera_position.z;
-  uniforms.camera_pos[3] = 1.0f;
+  // Scene uniforms
+  SceneUniforms scene{};
+  scene.view_proj = matrices.view_projection;
+  scene.camera_pos[0] = matrices.camera_position.x;
+  scene.camera_pos[1] = matrices.camera_position.y;
+  scene.camera_pos[2] = matrices.camera_position.z;
+  scene.camera_pos[3] = 1.0f;
 
-  // Linear-space colours from the JS museum's config.ts.
-  uniforms.wall_color[0] = 0.298f;
-  uniforms.wall_color[1] = 0.0f;
-  uniforms.wall_color[2] = 0.506f;
-  uniforms.wall_color[3] = 1.0f;
-  uniforms.floor_color[0] = 0.8f;
-  uniforms.floor_color[1] = 0.8f;
-  uniforms.floor_color[2] = 0.8f;
-  uniforms.floor_color[3] = 1.0f;
+  // Linear-space wall colour from the JS museum's config.ts.
+  scene.wall_color[0] = 0.298f;
+  scene.wall_color[1] = 0.0f;
+  scene.wall_color[2] = 0.506f;
+  scene.wall_color[3] = 1.0f;
 
-  // Key light, angled down and to one side.
-  uniforms.light_dir[0] = 0.4f;
-  uniforms.light_dir[1] = 0.85f;
-  uniforms.light_dir[2] = 0.35f;
-  uniforms.light_dir[3] = 0.0f;
+  scene.light_dir[0] = 0.4f;
+  scene.light_dir[1] = 0.85f;
+  scene.light_dir[2] = 0.35f;
+  scene.light_dir[3] = 0.0f;
 
-  queue_.WriteBuffer(uniform_buffer_, 0, &uniforms, sizeof(uniforms));
+  // Fog matches the horizon so distance reads as haze rather than a hard cutoff.
+  scene.fog[0] = kSkyHorizon[0];
+  scene.fog[1] = kSkyHorizon[1];
+  scene.fog[2] = kSkyHorizon[2];
+  scene.fog[3] = 0.0035f;
+
+  scene.tonemap[0] = kExposure;
+  scene.tonemap[1] = 1.0f;
+
+  for (int i = 0; i < 3; ++i) {
+    scene.sky_top[i] = kSkyTop[i];
+    scene.sky_horizon[i] = kSkyHorizon[i];
+    scene.sky_bottom[i] = kSkyBottom[i];
+  }
+  queue_.WriteBuffer(scene_uniforms_, 0, &scene, sizeof(scene));
+
+  // Sky uniforms
+  SkyUniforms sky{};
+  for (int i = 0; i < 3; ++i) {
+    sky.top[i] = kSkyTop[i];
+    sky.horizon[i] = kSkyHorizon[i];
+    sky.bottom[i] = kSkyBottom[i];
+  }
+  sky.tonemap[0] = kExposure;
+  sky.tonemap[1] = 1.0f;
+  queue_.WriteBuffer(sky_uniforms_, 0, &sky, sizeof(sky));
 
   wgpu::SurfaceTexture surface_texture{};
   surface_.GetCurrentTexture(&surface_texture);
@@ -398,7 +531,7 @@ void Renderer::RenderFrame(const player::ViewMatrices& matrices) {
   color.resolveTarget = nullptr;
   color.loadOp = wgpu::LoadOp::Clear;
   color.storeOp = wgpu::StoreOp::Store;
-  color.clearValue = {0.05f, 0.06f, 0.08f, 1.0f};
+  color.clearValue = {kSkyBottom[0], kSkyBottom[1], kSkyBottom[2], 1.0f};
 
   wgpu::RenderPassDepthStencilAttachment depth{};
   depth.view = depth_view_;
@@ -414,14 +547,26 @@ void Renderer::RenderFrame(const player::ViewMatrices& matrices) {
   wgpu::CommandEncoder encoder = device_.CreateCommandEncoder();
   {
     wgpu::RenderPassEncoder render_pass = encoder.BeginRenderPass(&pass);
-    if (index_count_ > 0) {
-      render_pass.SetPipeline(pipeline_);
-      render_pass.SetBindGroup(0, uniform_bind_group_);
-      render_pass.SetVertexBuffer(0, vertex_buffer_);
-      render_pass.SetIndexBuffer(index_buffer_, wgpu::IndexFormat::Uint32, 0,
-                                 index_count_ * sizeof(std::uint32_t));
-      render_pass.DrawIndexed(index_count_);
+
+    // Sky first: it fills the background and never occludes anything.
+    if (sky_index_count_ > 0) {
+      render_pass.SetPipeline(sky_pipeline_);
+      render_pass.SetBindGroup(0, sky_bind_group_);
+      render_pass.SetVertexBuffer(0, sky_vertices_);
+      render_pass.SetIndexBuffer(sky_indices_, wgpu::IndexFormat::Uint32, 0,
+                                 sky_index_count_ * sizeof(std::uint32_t));
+      render_pass.DrawIndexed(sky_index_count_);
     }
+
+    if (mesh_index_count_ > 0) {
+      render_pass.SetPipeline(scene_pipeline_);
+      render_pass.SetBindGroup(0, scene_bind_group_);
+      render_pass.SetVertexBuffer(0, mesh_vertices_);
+      render_pass.SetIndexBuffer(mesh_indices_, wgpu::IndexFormat::Uint32, 0,
+                                 mesh_index_count_ * sizeof(std::uint32_t));
+      render_pass.DrawIndexed(mesh_index_count_);
+    }
+
     render_pass.End();
   }
   wgpu::CommandBuffer commands = encoder.Finish();

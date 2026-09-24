@@ -14,7 +14,8 @@ This is the performance-focused successor to the Godot museum and the Three.js
 | 0 | Toolchain, CMake, minimal WebGPU triangle | done |
 | 1 | SDL3 window/input, math, player/camera, resize, native target | web done; native blocked (see below) |
 | 2 | Layout + RoomBuilder port, merged static geometry, AABB collision | done |
-| 3 | Renderer: materials, textures, sky, tonemapping | next |
+| 3 | Materials, floor texture, sky dome, tonemapping, sRGB | done |
+| 4 | Real lighting: clustered ceiling spots, shadows | next |
 
 ### Batch 1 native build blocker
 
@@ -97,17 +98,46 @@ src/
   player/
     player.{h,cpp}    yaw/pitch rig, AABB movement, gravity, view matrices
   render/
-    renderer.{h,cpp}  device bring-up, surface, depth target, frame
+    shaders.h         WGSL for the world pass and the sky dome
+    texture.{h,cpp}   stb_image decode + mip generation + upload
+    renderer.{h,cpp}  device bring-up, surface, depth, frame
   world/
     config.h          room/door/window dimensions, FloorTopY
     layout.{h,cpp}    the four floors, door bits, SealVoidDoors()
     room_builder.{h,cpp}  wall segmentation with door and window cuts
     collision.h       per-axis AABB resolve (the CharacterBody3D replacement)
     museum.{h,cpp}    builds every room, corner patches, and the merged mesh
+    sky.{h,cpp}       the gradient dome
+assets/
+  textures/floor_wall1.jpg   the floor brick texture
+third_party/
+  stb_image.h         vendored single-header image decoder
 web/
   shell.html          page, canvas, pointer lock, input bridge
 batch2_check.mjs      Playwright check: counts, spawn, eye height, collision
+capture_views.mjs     Playwright: screenshots from inside real rooms
 ```
+
+## Colour pipeline
+
+Textures are sampled as sRGB (the GPU linearises them), all lighting maths runs
+in linear space, then the result is tone-mapped (ACES) and encoded back to sRGB.
+Doing this in the wrong order is the usual cause of a washed-out or muddy
+result.
+
+Two things are easy to get wrong here and both are deliberate:
+
+- **Exposure stays at 1.0.** The JS museum has no tonemapper at all, so its
+  wall colour `WALL_COLOR_LINEAR = (0.298, 0, 0.506)` renders as sRGB
+  `#9400BD`. With ACES at exposure 1.0 this build lands the lit wall at
+  (161, 0, 195) against their (148, 0, 189) — close. Raising exposure
+  oversaturates the walls toward magenta, so the match is the check that
+  matters, not brightness.
+- **`textureSample` must be in uniform control flow.** The floor/wall split is a
+  per-pixel vertex attribute, so an `if (is_floor)` around the sample is a WGSL
+  compile error. The shader samples unconditionally and uses `select`.
+
+## Testing
 
 ## World model
 

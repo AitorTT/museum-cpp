@@ -67,6 +67,12 @@ extern "C" EMSCRIPTEN_KEEPALIVE int museumOnGround() {
   return g_engine.player().on_ground() ? 1 : 0;
 }
 
+// Positions the camera for the automated screenshot pass.
+extern "C" EMSCRIPTEN_KEEPALIVE void museumSetPose(float x, float y, float z,
+                                                   float yaw, float pitch) {
+  g_engine.mutable_player().SetPose(x, y, z, yaw, pitch);
+}
+
 #else
 
 int main() {

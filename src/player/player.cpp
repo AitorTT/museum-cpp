@@ -108,6 +108,13 @@ void Player::TeleportTo(float x, float y, float z) {
   fall_timer_ = 0.0f;
 }
 
+void Player::SetPose(float x, float y, float z, float yaw, float pitch) {
+  TeleportTo(x, y, z);
+  yaw_ = yaw;
+  const float limit = math::Radians(kMaxPitchDegrees);
+  pitch_ = math::Clamp(pitch, -limit, limit);
+}
+
 void Player::Respawn() {
   TeleportTo(kSpawnX, config::FloorTopY(0) + kCapsuleHeight / 2.0f, kSpawnZ);
   yaw_ = kSpawnYaw;
