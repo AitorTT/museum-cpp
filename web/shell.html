@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Museum</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #23272f; }
+  #canvas { display: block; width: 100vw; height: 100vh; outline: none; }
+</style>
+</head>
+<body>
+<canvas id="canvas" tabindex="-1"></canvas>
+<script>
+  // Keep the drawing buffer in step with the CSS size until the renderer
+  // handles resize itself (Batch 1).
+  function fitCanvas() {
+    var c = document.getElementById('canvas');
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    c.width = Math.floor(window.innerWidth * dpr);
+    c.height = Math.floor(window.innerHeight * dpr);
+  }
+  window.addEventListener('resize', fitCanvas);
+  fitCanvas();
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>

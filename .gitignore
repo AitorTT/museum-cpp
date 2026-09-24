@@ -1,0 +1,16 @@
+# Build output
+/build-web/
+/build/
+build-web/
+build/
+
+# Emscripten output (mirrors of the build dir, just in case)
+*.wasm
+*.js.map
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
