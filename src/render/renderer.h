@@ -58,10 +58,7 @@ class Renderer {
   void LoadFloorTexture(const char* assets_dir);
   void CreateSamplers();
 
-  // Renders every light's depth tile into the atlas.
-  // PARKED: not called while kShadowsEnabled is false (see renderer.cpp). Kept
-  // whole so re-enabling shadows is a flag change plus the shader lookup, not a
-  // rewrite.
+  // Renders each selected light's depth tile into the atlas.
   void RenderShadowPass();
 
   // Chooses the lights that affect this frame's viewpoint, nearest first, and

@@ -14,29 +14,27 @@ namespace museum::render::shaders {
 // The light model is the JS museum's bake model (energy/d^2, cone falloff,
 // bounce floor) evaluated per-pixel instead of per-vertex.
 //
-// SHADOWS ARE PARKED. The shadow atlas, the light-space matrices and the
-// comparison sampler were built and are kept (see world/shadows.h and the
-// shadow pass in renderer.cpp) but the sampling is disabled: every fragment is
-// treated as lit. Two things surfaced while debugging it that must be solved
-// before it can be switched on, and both are recorded rather than forgotten:
+// Shadows come from an atlas: each ceiling spot renders the museum from its own
+// point of view into a 256x256 tile of one 2048x2048 depth map, and a fragment
+// is shadowed if it lies behind the surface that its own spot can see. The
+// approach was proven first in a standalone scene (render/shadow_test.cpp), and
+// the two mistakes that scene caught are worth repeating here because both are
+// silent otherwise:
 //
-//   1. The per-axis resolve in CollisionWorld is unrelated, but the same class
-//      of mistake bit the shadow pass: clearing per light wiped the atlas,
-//      because a render pass covers the whole attachment and not just its
-//      viewport. Fixed (clear once, then Load), but the sampling path was never
-//      proven end to end.
-//   2. The nearest-N light selection (SelectLights) counts a neighbouring
-//      room's fixture as valid whenever its shadow lookup fails, so a room
-//      corner was lit by a fixture behind a wall. Without working shadows this
-//      is not fixable by selection alone, which is the real reason shadows are
-//      a prerequisite rather than a polish item.
+//   1. textureSampleLevel with a sampler_comparison does not compile -- and a
+//      shader that fails to compile renders nothing at all, so the symptom was a
+//      black screen rather than a black shadow. The comparison sampler only
+//      supports textureSampleCompare; there is no raw depth readback through it.
+//   2. The light look-at must use z_axis = -(light target - light eye), not the
+//      light direction itself. Getting the sign wrong inverts the depth test,
+//      which reads as fully shadowed everywhere.
 inline constexpr char kSceneShader[] = R"(
 struct Light {
   position_range : vec4<f32>,   // xyz = fixture, w = range
   direction_cone : vec4<f32>,   // xyz = direction, w = cos(inner)
   color_energy : vec4<f32>,     // rgb = colour, a = energy
-  outer_and_shadow : vec4<f32>, // x = cos(outer), y = 1 when shadowed
-  atlas_rect : vec4<f32>,       // shadow atlas UV rect (unused while parked)
+  outer_and_shadow : vec4<f32>, // x = cos(outer), y = shadow slot + 1 (0 = none)
+  atlas_rect : vec4<f32>,       // shadow atlas UV rect: xy origin, zw size
 };
 
 struct Uniforms {
@@ -51,13 +49,15 @@ struct Uniforms {
   ambient : vec4<f32>,      // x = ambient, y = min distance (E/d^2 clamp)
   bounce : vec4<f32>,       // x = wall, y = floor, z = min, w = max
   ceil_glow : vec4<f32>,    // x = base, y = glow, z = sigma^2
-  light_count : vec4<f32>,  // x = count
+  light_count : vec4<f32>,  // x = count, y = shadow tile size in texels
   light_view_proj : array<mat4x4<f32>, 4>,
   lights : array<Light, 4>,
 };
 @group(0) @binding(0) var<uniform> u : Uniforms;
 @group(0) @binding(1) var floor_tex : texture_2d<f32>;
 @group(0) @binding(2) var floor_sampler : sampler;
+@group(0) @binding(3) var shadow_atlas : texture_depth_2d;
+@group(0) @binding(4) var shadow_sampler : sampler_comparison;
 
 struct VertexIn {
   @location(0) position : vec3<f32>,
@@ -114,6 +114,43 @@ fn d_squared_clamped(world_pos : vec3<f32>, light_pos : vec3<f32>, min_dist : f3
   let d2 = dot(delta, delta);
   let minimum = min_dist * min_dist;
   return max(d2, minimum);
+}
+
+// Fraction of light a fragment receives from one spot's atlas tile: 1 outside
+// the tile's shadow, 0 inside it.
+//
+// Four comparison taps in a small cross keep the edge from stair-stepping at
+// this tile resolution. The taps are taken unconditionally and combined with
+// select, because textureSampleCompare is only legal in uniform control flow.
+fn shadow_term(slot : i32, atlas_rect : vec4<f32>, world_pos : vec3<f32>) -> f32 {
+  let light_clip = u.light_view_proj[slot] * vec4<f32>(world_pos, 1.0);
+  let ndc = light_clip.xyz / light_clip.w;
+  let local_uv = ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
+
+  // Map the light's own [-1,1] box onto its tile in the atlas.
+  let atlas_uv = atlas_rect.xy + local_uv * atlas_rect.zw;
+
+  let texel = atlas_rect.zw / u.light_count.y;
+
+  // A slope-scaled bias. The museum's surfaces are mostly axis-aligned, so a
+  // constant term plus a fixed extra is enough and avoids a costly derivative.
+  let bias = 0.0016 + 0.004 * (1.0 - abs(normalize(world_pos - u.camera_pos.xyz).y));
+  let tested = ndc.z - bias;
+
+  // Every tap is taken unconditionally and the out-of-range case is folded in
+  // with select: textureSampleCompare requires uniform control flow, and a
+  // per-fragment early-out around it is a shader compile error.
+  var shadow = 0.0;
+  shadow = shadow + textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv, tested);
+  shadow = shadow + textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(texel.x, 0.0), tested);
+  shadow = shadow + textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(-texel.x, 0.0), tested);
+  shadow = shadow + textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(0.0, texel.y), tested);
+  shadow = shadow + textureSampleCompare(shadow_atlas, shadow_sampler, atlas_uv + vec2<f32>(0.0, -texel.y), tested);
+  shadow = shadow * 0.2;
+
+  // Outside the light's box there is nothing to sample, so the fragment is lit.
+  let inside = ndc.z >= 0.0 && ndc.z <= 1.0;
+  return select(1.0, shadow, inside);
 }
 
 @fragment
@@ -181,8 +218,17 @@ fn fs_main(in : VertexOut) -> @location(0) vec4<f32> {
     let d2 = d_squared_clamped(in.world_pos, light_pos, u.ambient.y);
     let attenuation = light.color_energy.a / d2;
 
+    // Sample unconditionally, then mask: textureSampleCompare needs uniform
+    // control flow, and the slot is a uniform value so the sample itself is
+    // safe here even where the light does not reach.
+    let slot = i32(light.outer_and_shadow.y) - 1;
+    var visibility = 1.0;
+    if (slot >= 0) {
+      visibility = shadow_term(slot, light.atlas_rect, in.world_pos);
+    }
+
     lit = lit + albedo * light.color_energy.rgb * attenuation * cone * n_dot_l *
-                influence;
+                influence * visibility;
   }
 
   // The JS bake clamps the total, which is what keeps a doorway between two
@@ -201,9 +247,8 @@ fn fs_main(in : VertexOut) -> @location(0) vec4<f32> {
 }
 )";
 
-// Packs a light's position and range for the shadow depth pass. PARKED: not
-// bound by any pipeline while shadows are off, kept so the pass can be
-// re-enabled without rewriting it.
+// The shadow depth pass: transforms museum vertices by one light's view-
+// projection. No fragment stage, so only depth is written.
 inline constexpr char kShadowShader[] = R"(
 struct ShadowUniforms {
   view_proj : mat4x4<f32>,

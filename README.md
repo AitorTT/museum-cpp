@@ -15,8 +15,8 @@ This is the performance-focused successor to the Godot museum and the Three.js
 | 1 | SDL3 window/input, math, player/camera, resize, native target | web done; native blocked (see below) |
 | 2 | Layout + RoomBuilder port, merged static geometry, AABB collision | done |
 | 3 | Materials, floor texture, sky dome, tonemapping, sRGB | done |
-| 4 | Ceiling spot lighting (43 lights, per-pixel) | lighting done; **shadows parked** |
-| 5 | Real shadow mapping (see "Parked work") | next |
+| 4 | Ceiling spot lighting (43 lights, per-pixel) | done |
+| 5 | Real shadow mapping (atlas of per-light depth tiles) | done |
 
 ### Batch 1 native build blocker
 
@@ -109,6 +109,7 @@ src/
     collision.h       per-axis AABB resolve (the CharacterBody3D replacement)
     museum.{h,cpp}    builds every room, corner patches, and the merged mesh
     sky.{h,cpp}       the gradient dome
+    shadows.{h,cpp}   light-space matrices and shadow-atlas tile rectangles
 assets/
   textures/floor_wall1.jpg   the floor brick texture
 third_party/
@@ -119,42 +120,46 @@ batch2_check.mjs      Playwright check: counts, spawn, eye height, collision
 capture_views.mjs     Playwright: screenshots from inside real rooms
 ```
 
-## Parked work: shadow mapping
+## Shadow mapping
 
-Shadow mapping is **built but switched off**. Everything is in place and was
-reached at runtime, gated behind `kShadowsEnabled` in `render/renderer.cpp`:
+Each ceiling spot renders the museum from its own point of view into a 256x256
+tile of one 2048x2048 `Depth32Float` atlas, and a fragment is shadowed if it
+lies behind the surface its own spot can see. The pieces:
 
-- `world/shadows.{h,cpp}` builds the light-space matrices
-- a 2048x2048 `Depth32Float` atlas holds one 256x256 tile per light
+- `world/shadows.{h,cpp}` builds the light-space matrices and each light's tile
+  rectangle
 - `BuildShadowPipeline` renders depth with slope-scaled bias
-- the shader has the PCF comparison-sampler lookup
+- the scene shader's `shadow_term` does a 5-tap comparison-sampler PCF lookup
 
-What was never proven is the sampling itself, which read as fully-shadowed
-everywhere. Three things surfaced while debugging, recorded so the next attempt
-starts from them rather than repeating them:
+The approach was proven first in a standalone shadow-mapped cube (since removed
+once it had served its purpose), which caught three mistakes that are all silent
+otherwise:
 
-1. **A per-light `LoadOp::Clear` wiped the atlas.** A render pass covers the
-   whole attachment, not just its viewport, so clearing inside the per-light
-   loop destroyed every tile already drawn and only the last survived. Fixed by
-   clearing once and then using `LoadOp::Load`.
-2. **The orthographic matrix set `m[15] = 0`**, which makes `clip.w` always 0
-   and turns the shader's `ndc = clip / clip.w` into a division by zero. An
-   orthographic projection must keep `m[15] = 1`; that entry is the one that
-   differs from the perspective matrix.
-3. **Reading depth back through a comparison sampler does not return raw
-   depth.** It returns a filtered comparison in 0..1, so a debug readback built
-   that way cannot be trusted. Inspecting stored depth needs a second,
-   non-comparison sampler bound alongside.
+1. **`textureSampleLevel` with a `sampler_comparison` does not compile.** A
+   shader that fails to compile renders *nothing at all*, so the symptom was a
+   black screen rather than a black shadow. A comparison sampler only supports
+   `textureSampleCompare`; there is no raw depth readback through it.
+2. **The light look-at must use `z_axis = -(target - eye)`, not the light
+   direction.** The wrong sign inverts the depth test, which reads as
+   fully-shadowed everywhere. The museum's `BuildShadowView` already had this
+   right; the throwaway test did not.
+3. **`textureSampleCompare` must be in uniform control flow.** A per-fragment
+   early-out around the taps (skip when outside the light's box) is a compile
+   error; the taps must be taken unconditionally and the out-of-range case
+   folded in with `select`.
 
-There is also a design problem that shadows were meant to solve rather than
-merely improve: `SelectLights` picks the nearest N fixtures, and a room corner
-is within range of a neighbouring room's fixture *behind a wall*. Without an
-occlusion test those neighbours contribute, which is why a corner measured
-brighter than a room centre. Shadows are a prerequisite for correct light
-selection here, not a polish item.
+Two older bugs, fixed before parking, remain worth remembering:
 
-The recommended way to restart is a standalone shadow-mapped cube — no museum,
-no atlas, one light — proven correct first, then scaled up.
+- a per-light `LoadOp::Clear` wiped the atlas, because a render pass covers the
+  whole attachment and not just its viewport; it clears once, then uses `Load`
+- the orthographic matrix must keep `m[15] = 1`, or `clip.w` is always 0 and the
+  shader's `ndc = clip / clip.w` divides by zero
+
+`SelectLights` still picks nearest-N by distance with no occlusion test, so a
+neighbour's fixture can be selected for a room corner. That is now harmless:
+a light behind a wall cannot see the fragment, so its shadow lookup returns 0
+and it contributes nothing. Selection decides which lights are worth shading;
+the shadow map decides which of those actually reach the surface.
 
 ## Lighting
 

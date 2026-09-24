@@ -19,8 +19,7 @@
 
 namespace museum::world {
 
-// PARKED with the rest of the shadow path (see kShadowsEnabled in
-// render/renderer.cpp); these are sized for the museum's 43 lights.
+// Shared sizing for the shadow atlas, sized for the museum's 43 lights.
 //
 // Tile size in texels. An 8x8 grid at 512 would be 4096x4096, or 64 MB of
 // Depth32Float: affordable but wasteful. 256 gives 2048x2048 (16 MB) and, over

@@ -71,32 +71,21 @@ constexpr float kSkyBottom[3] = {0x23 / 255.0f, 0x27 / 255.0f, 0x2f / 255.0f};
 constexpr float kExposure = 1.0f;
 
 // Shadow ortho box: the spot's usable radius across, and how deep to trace.
-// PARKED: shadows are off (see kShadowsEnabled); kept with the pass below.
 constexpr float kShadowExtent = 9.0f;
 constexpr float kShadowDepth = 18.0f;
 
-// Shadows are parked, not deleted.
+// Shadows on. This was parked while the sampling path was unproven; it is now
+// backed by a standalone test (render/shadow_test.cpp) that renders one light,
+// one caster and one floor and shows a correct shadow, and the two bugs that
+// test found are recorded in the scene shader's header comment.
 //
-// The atlas, the light-space matrices, the depth pipeline and the comparison
-// sampler are all written and were reached at runtime; what was never proven is
-// the sampling itself, which read as fully-shadowed everywhere. Turning this
-// back on restores the pass and the bindings; the shader's shadow function has
-// to be reintroduced at the same time, which is why the whole thing is flagged
-// rather than half-wired.
-//
-// Known blockers, recorded so the next attempt starts from them:
-//   1. Reading depth back through a comparison sampler returns a filtered
-//      comparison (0..1), not raw depth, so a naive readback cannot be trusted
-//      when debugging. A non-comparison sampler bound alongside is needed to
-//      inspect stored depth.
-//   2. SelectLights treats a neighbouring room's fixture as valid whenever its
-//      shadow lookup fails, so a room corner was lit by a fixture behind a
-//      wall. The nearest-N selection needs occlusion data to be correct, which
-//      makes shadows a prerequisite for it rather than a refinement.
-//   3. A per-light LoadOp::Clear wiped the atlas, because a render pass covers
-//      the whole attachment and not just its viewport. Fixed by clearing once
-//      and then using LoadOp::Load; worth re-verifying after any change here.
-inline constexpr bool kShadowsEnabled = false;
+// The remaining known limitation is SelectLights: nearest-N by distance with no
+// occlusion test, so a fragment in a room corner can be lit by a neighbour's
+// fixture through the wall. With shadows on, that fixture's own shadow map
+// generally fails to find the fragment's room surface and confidently reports it
+// lit, which is exactly the case occlusion-aware selection has to fix. See the
+// TODO in SelectLights.
+inline constexpr bool kShadowsEnabled = true;
 
 void LogString(const wgpu::StringView& message) {
   if (message.length) {
@@ -292,9 +281,9 @@ void Renderer::CreateSamplers() {
   sampler_desc.maxAnisotropy = 8;
   floor_sampler_ = device_.CreateSampler(&sampler_desc);
 
-  // Comparison sampler for the shadow atlas. PARKED with the rest of the shadow
-  // path; only created when shadows are enabled.
-  if (kShadowsEnabled) {
+  // Comparison sampler for the shadow atlas: the hardware returns a filtered
+  // 0..1 comparison rather than raw depth, which is what the PCF lookup wants.
+  {
     wgpu::SamplerDescriptor shadow_sampler_desc{};
     shadow_sampler_desc.addressModeU = wgpu::AddressMode::ClampToEdge;
     shadow_sampler_desc.addressModeV = wgpu::AddressMode::ClampToEdge;
@@ -343,10 +332,9 @@ void Renderer::BuildScenePipeline() {
   module_desc.nextInChain = &wgsl;
   wgpu::ShaderModule module = device_.CreateShaderModule(&module_desc);
 
-  // Scene bindings: uniforms, the floor texture, and its sampler. The shadow
-  // atlas and its comparison sampler were bindings 3 and 4; they are removed
-  // while shadows are parked, and the atlas no longer exists at all.
-  wgpu::BindGroupLayoutEntry entries[3] = {};
+  // Scene bindings: uniforms, the floor texture and its sampler, then the shadow
+  // atlas and its comparison sampler.
+  wgpu::BindGroupLayoutEntry entries[5] = {};
   entries[0].binding = 0;
   entries[0].visibility = wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment;
   entries[0].buffer.type = wgpu::BufferBindingType::Uniform;
@@ -358,9 +346,16 @@ void Renderer::BuildScenePipeline() {
   entries[2].binding = 2;
   entries[2].visibility = wgpu::ShaderStage::Fragment;
   entries[2].sampler.type = wgpu::SamplerBindingType::Filtering;
+  entries[3].binding = 3;
+  entries[3].visibility = wgpu::ShaderStage::Fragment;
+  entries[3].texture.sampleType = wgpu::TextureSampleType::Depth;
+  entries[3].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+  entries[4].binding = 4;
+  entries[4].visibility = wgpu::ShaderStage::Fragment;
+  entries[4].sampler.type = wgpu::SamplerBindingType::Comparison;
 
   wgpu::BindGroupLayoutDescriptor layout_desc{};
-  layout_desc.entryCount = 3;
+  layout_desc.entryCount = 5;
   layout_desc.entries = entries;
   wgpu::BindGroupLayout bind_group_layout = device_.CreateBindGroupLayout(&layout_desc);
 
@@ -422,7 +417,7 @@ void Renderer::BuildScenePipeline() {
   buffer_desc.size = sizeof(SceneUniforms);
   scene_uniforms_ = device_.CreateBuffer(&buffer_desc);
 
-  wgpu::BindGroupEntry bind_entries[3] = {};
+  wgpu::BindGroupEntry bind_entries[5] = {};
   bind_entries[0].binding = 0;
   bind_entries[0].buffer = scene_uniforms_;
   bind_entries[0].offset = 0;
@@ -431,10 +426,14 @@ void Renderer::BuildScenePipeline() {
   bind_entries[1].textureView = floor_view_;
   bind_entries[2].binding = 2;
   bind_entries[2].sampler = floor_sampler_;
+  bind_entries[3].binding = 3;
+  bind_entries[3].textureView = shadow_atlas_view_;
+  bind_entries[4].binding = 4;
+  bind_entries[4].sampler = shadow_sampler_;
 
   wgpu::BindGroupDescriptor bind_group_desc{};
   bind_group_desc.layout = bind_group_layout;
-  bind_group_desc.entryCount = 3;
+  bind_group_desc.entryCount = 5;
   bind_group_desc.entries = bind_entries;
   scene_bind_group_ = device_.CreateBindGroup(&bind_group_desc);
 }
@@ -654,6 +653,13 @@ void Renderer::SelectLights(const math::Vec3& camera_pos) {
   // Nearest first by distance to the fixture. With rooms on a 10u grid and a
   // 15u range, the camera's own room is always nearest, so a fixed nearest-N
   // gives the same answer as a proper influence test for far less work.
+  //
+  // This deliberately does NOT test occlusion: a neighbour's fixture can still
+  // be picked here. That is fine because the fragment-level shadow term rejects
+  // it -- a light behind a wall cannot see the fragment, so its shadow lookup
+  // returns 0 and it contributes nothing. Selection decides which lights are
+  // worth shading; the shadow map decides which of those actually reach the
+  // surface, which is the cheaper split than a per-light CPU occlusion test.
   const std::size_t count =
       std::min<std::size_t>(lights_.size(), world::kMaxLightsPerFragment);
   if (count == 0) {
@@ -677,7 +683,6 @@ void Renderer::SelectLights(const math::Vec3& camera_pos) {
 }
 
 void Renderer::RenderShadowPass() {
-  // PARKED. See kShadowsEnabled for why, and for what has to be solved first.
   if (!kShadowsEnabled) {
     return;
   }
@@ -703,27 +708,25 @@ void Renderer::RenderShadowPass() {
     clear_pass.End();
   }
 
-  if (lights_.empty()) {
-    wgpu::CommandBuffer commands = encoder.Finish();
-    queue_.Submit(1, &commands);
-    return;
-  }
-
-  for (std::size_t i = 0; i < lights_.size(); ++i) {
+  // Only the lights this frame samples need a tile. Rendering all 43 every frame
+  // would be 43 full-museum depth draws for at most 4 used tiles.
+  for (int index : selected_lights_) {
+    const std::size_t light_index = static_cast<std::size_t>(index);
     ShadowUniforms uniforms{};
-    uniforms.view_proj = shadow_views_[i].view_projection;
+    uniforms.view_proj = shadow_views_[light_index].view_projection;
     queue_.WriteBuffer(shadow_uniforms_, 0, &uniforms, sizeof(uniforms));
 
     const std::uint32_t column =
-        static_cast<std::uint32_t>(i) % world::kShadowAtlasColumns;
+        static_cast<std::uint32_t>(light_index) % world::kShadowAtlasColumns;
     const std::uint32_t row =
-        (static_cast<std::uint32_t>(i) / world::kShadowAtlasColumns) %
+        (static_cast<std::uint32_t>(light_index) / world::kShadowAtlasColumns) %
         world::kShadowAtlasRows;
 
     wgpu::RenderPassDepthStencilAttachment depth{};
     depth.view = shadow_atlas_view_;
     depth.depthLoadOp = wgpu::LoadOp::Load;
     depth.depthStoreOp = wgpu::StoreOp::Store;
+    depth.depthClearValue = 1.0f;
 
     wgpu::RenderPassDescriptor pass{};
     pass.depthStencilAttachment = &depth;
@@ -760,6 +763,8 @@ void Renderer::RenderFrame(const player::ViewMatrices& matrices) {
 
   SelectLights(matrices.camera_position);
 
+  RenderShadowPass();
+
   SceneUniforms scene{};
   scene.view_proj = matrices.view_projection;
   scene.camera_pos[0] = matrices.camera_position.x;
@@ -793,7 +798,9 @@ void Renderer::RenderFrame(const player::ViewMatrices& matrices) {
   scene.ceil_glow[2] = config::kBakeCeilSigma2;
 
   scene.light_count[0] = static_cast<float>(selected_lights_.size());
-  // light_count[1] used to carry the shadow texel size; unused while parked.
+  // The shader turns an atlas rect into a texel offset for its PCF taps, which
+  // needs the tile size in texels.
+  scene.light_count[1] = static_cast<float>(world::kShadowTileSize);
 
   for (int i = 0; i < 3; ++i) {
     scene.sky_top[i] = kSkyTop[i];
@@ -822,20 +829,18 @@ void Renderer::RenderFrame(const player::ViewMatrices& matrices) {
     out.color_energy[3] = light.energy;
 
     out.outer_and_shadow[0] = light.cone_outer;
-    out.outer_and_shadow[1] = 0.0f;  // no shadow tile while shadows are parked
+    // slot + 1, so the shader can treat 0 as "no shadow tile for this light".
+    out.outer_and_shadow[1] = static_cast<float>(slot + 1);
 
-    // Shadow matrices and atlas rects stay zeroed while parked, but the fields
-    // remain in the uniform so the layout does not have to change to re-enable
-    // the pass.
-    if (kShadowsEnabled) {
-      const world::ShadowView& view =
-          shadow_views_[static_cast<std::size_t>(index)];
-      out.outer_and_shadow[1] = 1.0f;
-      for (int k = 0; k < 4; ++k) {
-        out.atlas_rect[k] = view.atlas_rect[k];
-      }
-      scene.light_view_proj[slot] = view.view_projection;
+    // Shadow matrices and atlas rects. The per-fragment light array is indexed
+    // by `slot`, so light_view_proj is written there; atlas_rect carries the
+    // light's own tile, which is keyed off its global index (it never changes).
+    const world::ShadowView& view =
+        shadow_views_[static_cast<std::size_t>(index)];
+    for (int k = 0; k < 4; ++k) {
+      out.atlas_rect[k] = view.atlas_rect[k];
     }
+    scene.light_view_proj[slot] = view.view_projection;
   }
   queue_.WriteBuffer(scene_uniforms_, 0, &scene, sizeof(scene));
 
