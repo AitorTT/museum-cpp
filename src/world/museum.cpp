@@ -6,9 +6,15 @@
 #include "player/player.h"
 #include "world/config.h"
 #include "world/layout.h"
+#include "world/lights.h"
 
 namespace museum::world {
 namespace {
+
+// Spot range, from the JS museum's note on the Godot scene overrides
+// ("energy 8, range 15, 60deg cone"). The bake used energy 48 with an E/d^2
+// model, and it drives the same equation here.
+constexpr float kLightRange = 15.0f;
 
 // Appends one axis-aligned box as 24 vertices / 36 indices, with flat normals.
 // Each box is emitted independently rather than merged with its neighbours: the
@@ -111,6 +117,21 @@ void Museum::Build() {
         AddSegment(box);
         min_y = math::Min(min_y, box.MinY());
         max_y = math::Max(max_y, box.MaxY());
+      }
+
+      // One ceiling spot per room, at the fixture position RoomBuilder used as
+      // this room's light anchor.
+      if (!plan.boxes.empty()) {
+        SpotLight light;
+        light.position = {plan.boxes.front().lx, plan.boxes.front().ly,
+                          plan.boxes.front().lz};
+        // Straight down, as in RoomBuilder._add_light.
+        light.direction = {0.0f, -1.0f, 0.0f};
+        light.energy = museum::config::kBakeEnergy;
+        light.range = kLightRange;
+        light.cone_inner = museum::config::kBakeConeInner;
+        light.cone_outer = museum::config::kBakeConeOuter;
+        lights_.push_back(light);
       }
 
       if (plan.has_painting_spot) {

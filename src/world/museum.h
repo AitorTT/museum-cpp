@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "world/collision.h"
+#include "world/lights.h"
 #include "world/room_builder.h"
 
 namespace museum::world {
@@ -61,6 +62,7 @@ class Museum {
 
   const CollisionWorld& collision() const { return collision_; }
   const MuseumStats& stats() const { return stats_; }
+  const std::vector<SpotLight>& lights() const { return lights_; }
 
  private:
   void AddSegment(const SegmentBox& box);
@@ -68,6 +70,7 @@ class Museum {
 
   std::vector<SegmentBox> segments_;
   std::vector<PaintingSpot> painting_spots_;
+  std::vector<SpotLight> lights_;
   CollisionWorld collision_;
   MuseumStats stats_;
 };

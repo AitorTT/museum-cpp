@@ -26,7 +26,7 @@ bool Engine::Initialize(const char* title, std::uint32_t width, std::uint32_t he
 
   player_.SetWorld(&museum_.collision());
 
-  if (!renderer_.Initialize(&window_, mesh, sky, kAssetsDir)) {
+  if (!renderer_.Initialize(&window_, mesh, sky, museum_.lights(), kAssetsDir)) {
     return false;
   }
 

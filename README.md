@@ -15,7 +15,8 @@ This is the performance-focused successor to the Godot museum and the Three.js
 | 1 | SDL3 window/input, math, player/camera, resize, native target | web done; native blocked (see below) |
 | 2 | Layout + RoomBuilder port, merged static geometry, AABB collision | done |
 | 3 | Materials, floor texture, sky dome, tonemapping, sRGB | done |
-| 4 | Real lighting: clustered ceiling spots, shadows | next |
+| 4 | Ceiling spot lighting (43 lights, per-pixel) | lighting done; **shadows parked** |
+| 5 | Real shadow mapping (see "Parked work") | next |
 
 ### Batch 1 native build blocker
 
@@ -117,6 +118,62 @@ web/
 batch2_check.mjs      Playwright check: counts, spawn, eye height, collision
 capture_views.mjs     Playwright: screenshots from inside real rooms
 ```
+
+## Parked work: shadow mapping
+
+Shadow mapping is **built but switched off**. Everything is in place and was
+reached at runtime, gated behind `kShadowsEnabled` in `render/renderer.cpp`:
+
+- `world/shadows.{h,cpp}` builds the light-space matrices
+- a 2048x2048 `Depth32Float` atlas holds one 256x256 tile per light
+- `BuildShadowPipeline` renders depth with slope-scaled bias
+- the shader has the PCF comparison-sampler lookup
+
+What was never proven is the sampling itself, which read as fully-shadowed
+everywhere. Three things surfaced while debugging, recorded so the next attempt
+starts from them rather than repeating them:
+
+1. **A per-light `LoadOp::Clear` wiped the atlas.** A render pass covers the
+   whole attachment, not just its viewport, so clearing inside the per-light
+   loop destroyed every tile already drawn and only the last survived. Fixed by
+   clearing once and then using `LoadOp::Load`.
+2. **The orthographic matrix set `m[15] = 0`**, which makes `clip.w` always 0
+   and turns the shader's `ndc = clip / clip.w` into a division by zero. An
+   orthographic projection must keep `m[15] = 1`; that entry is the one that
+   differs from the perspective matrix.
+3. **Reading depth back through a comparison sampler does not return raw
+   depth.** It returns a filtered comparison in 0..1, so a debug readback built
+   that way cannot be trusted. Inspecting stored depth needs a second,
+   non-comparison sampler bound alongside.
+
+There is also a design problem that shadows were meant to solve rather than
+merely improve: `SelectLights` picks the nearest N fixtures, and a room corner
+is within range of a neighbouring room's fixture *behind a wall*. Without an
+occlusion test those neighbours contribute, which is why a corner measured
+brighter than a room centre. Shadows are a prerequisite for correct light
+selection here, not a polish item.
+
+The recommended way to restart is a standalone shadow-mapped cube — no museum,
+no atlas, one light — proven correct first, then scaled up.
+
+## Lighting
+
+The museum is lit by 43 ceiling spots, one per room, at the fixture position
+`RoomBuilder` uses. The model is the JS museum's bake constants evaluated
+per-pixel instead of per-vertex:
+
+- `E/d^2` falloff, with the distance clamped to `min distance` so a fragment
+  directly under a fixture does not blow up
+- a two-angle cone: full brightness inside the inner cosine, fading to nothing
+  at the outer one
+- a constant bounce term (separate for floor and walls) standing in for the
+  light that re-radiates off surfaces
+- a separate gaussian pool of brightness on the ceiling, because a downward spot
+  never lights the ceiling it hangs from (`n_dot_l` is zero up there)
+
+`SelectLights` uploads the nearest 4 fixtures and the shader sums them, clamped
+to the JS bake's `[min, max]` range. The nearest-4 choice is correct for a room
+interior but not yet for a doorway or corner — see "Parked work" above.
 
 ## Colour pipeline
 

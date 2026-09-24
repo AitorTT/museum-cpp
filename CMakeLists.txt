@@ -30,8 +30,11 @@ set(MUSEUM_SOURCES
   src/world/room_builder.cpp
   src/world/room_builder.h
   src/world/collision.h
+  src/world/lights.h
   src/world/museum.cpp
   src/world/museum.h
+  src/world/shadows.cpp
+  src/world/shadows.h
   src/world/sky.cpp
   src/world/sky.h
 )

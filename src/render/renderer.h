@@ -1,18 +1,26 @@
 // WebGPU renderer: device bring-up, a configurable surface, and the frame.
 //
-// Draw order is sky first (a full-screen dome with no depth write), then the
-// museum with depth testing. Both passes share the same exposure, tonemap and
-// sRGB encode, so the dome and the walls meet seamlessly at the horizon.
+// Three passes:
+//   1. shadow depth, once per light, each into its own tile of one atlas
+//   2. sky dome, filling the background
+//   3. the museum, lit by the nearest few lights and shadow-tested
+//
+// The shadow pass runs every frame even though the museum is static, because
+// it is a handful of small draws; if profiling says otherwise, caching it is a
+// one-line change since nothing about the geometry moves.
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 #include <webgpu/webgpu_cpp.h>
 
 #include "core/math.h"
 #include "platform/window.h"
 #include "player/player.h"
+#include "world/lights.h"
 #include "world/museum.h"
+#include "world/shadows.h"
 #include "world/sky.h"
 
 namespace museum::render {
@@ -25,20 +33,23 @@ class Renderer {
   Renderer(const Renderer&) = delete;
   Renderer& operator=(const Renderer&) = delete;
 
-  // `assets_dir` is where textures live: "assets" on the web (packaged into the
-  // Emscripten filesystem) or a path on disk natively.
   bool Initialize(platform::Window* window, const world::Mesh& museum_mesh,
-                  const world::SkyMesh& sky_mesh, const char* assets_dir);
+                  const world::SkyMesh& sky_mesh,
+                  const std::vector<world::SpotLight>& lights,
+                  const char* assets_dir);
 
   void Resize(std::uint32_t width, std::uint32_t height);
   void RenderFrame(const player::ViewMatrices& matrices);
 
   bool ready() const { return ready_; }
+  std::uint32_t shadow_atlas_size() const { return world::kShadowAtlasSize; }
 
  private:
   void BuildScenePipeline();
   void BuildSkyPipeline();
+  void BuildShadowPipeline();
   void CreateDepthTarget();
+  void CreateShadowAtlas();
   bool CreateSurface();
   void ConfigureSurface();
   bool WaitFor(bool& flag);
@@ -46,7 +57,14 @@ class Renderer {
   void UploadMesh(const world::Mesh& mesh, wgpu::Buffer& vertex_buffer,
                   wgpu::Buffer& index_buffer, std::uint32_t& index_count);
   void LoadFloorTexture(const char* assets_dir);
-  void CreateSampler();
+  void CreateSamplers();
+
+  // Renders every light's depth tile into the atlas.
+  void RenderShadowPass();
+
+  // Chooses the lights that affect this frame's viewpoint, nearest first, and
+  // writes their uniforms.
+  void SelectLights(const math::Vec3& camera_pos);
 
   platform::Window* window_ = nullptr;
 
@@ -57,6 +75,7 @@ class Renderer {
   wgpu::Surface surface_;
   wgpu::TextureFormat surface_format_ = wgpu::TextureFormat::BGRA8Unorm;
   wgpu::TextureFormat depth_format_ = wgpu::TextureFormat::Depth24Plus;
+  wgpu::TextureFormat shadow_format_ = wgpu::TextureFormat::Depth32Float;
 
   // Scene pass
   wgpu::RenderPipeline scene_pipeline_;
@@ -74,13 +93,27 @@ class Renderer {
   wgpu::Buffer sky_indices_;
   std::uint32_t sky_index_count_ = 0;
 
-  // Textures
+  // Shadow pass
+  wgpu::RenderPipeline shadow_pipeline_;
+  wgpu::Buffer shadow_uniforms_;
+  wgpu::BindGroup shadow_bind_group_;
+  wgpu::Texture shadow_atlas_;
+  wgpu::TextureView shadow_atlas_view_;
+
+  // Textures and samplers
   wgpu::Texture floor_texture_;
   wgpu::TextureView floor_view_;
   wgpu::Sampler floor_sampler_;
+  wgpu::Sampler shadow_sampler_;
 
   wgpu::Texture depth_texture_;
   wgpu::TextureView depth_view_;
+
+  std::vector<world::SpotLight> lights_;
+  std::vector<world::ShadowView> shadow_views_;
+
+  // Per-frame light selection, reused to avoid per-frame allocation.
+  std::vector<int> selected_lights_;
 
   std::uint32_t width_ = 0;
   std::uint32_t height_ = 0;
