@@ -42,7 +42,6 @@ class Renderer {
   void RenderFrame(const player::ViewMatrices& matrices);
 
   bool ready() const { return ready_; }
-  std::uint32_t shadow_atlas_size() const { return world::kShadowAtlasSize; }
 
  private:
   void BuildScenePipeline();
@@ -60,6 +59,9 @@ class Renderer {
   void CreateSamplers();
 
   // Renders every light's depth tile into the atlas.
+  // PARKED: not called while kShadowsEnabled is false (see renderer.cpp). Kept
+  // whole so re-enabling shadows is a flag change plus the shader lookup, not a
+  // rewrite.
   void RenderShadowPass();
 
   // Chooses the lights that affect this frame's viewpoint, nearest first, and

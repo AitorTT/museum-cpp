@@ -213,11 +213,12 @@ bool Renderer::Initialize(platform::Window* window, const world::Mesh& museum_me
   UploadMesh(sky_mesh, sky_vertices_, sky_indices_, sky_index_count_);
 
   ready_ = true;
-  std::printf(
-      "Renderer: ready, %ux%u, %u museum indices, %u sky indices, %zu lights, "
-      "shadow atlas %u",
-      width_, height_, mesh_index_count_, sky_index_count_, lights_.size(),
-      world::kShadowAtlasSize);
+  std::printf("Renderer: ready, %ux%u, %u museum indices, %u sky indices, %zu lights",
+              width_, height_, mesh_index_count_, sky_index_count_, lights_.size());
+  if (kShadowsEnabled) {
+    std::printf(", shadow atlas %u", world::kShadowAtlasSize);
+  }
+  std::printf("\n");
   return true;
 }
 

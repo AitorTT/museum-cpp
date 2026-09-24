@@ -19,10 +19,13 @@
 
 namespace museum::world {
 
-// Tile size in texels. 43 lights in a 7x7 grid at 512 = 3584x3584, which is
-// 48 MB of Depth32Float. That is affordable but wasteful; 256 gives 1792x1792
-// (12 MB) and, at a 15u frustum over 256 texels, roughly 6 cm per texel, which
-// is plenty for soft room-scale shadows.
+// PARKED with the rest of the shadow path (see kShadowsEnabled in
+// render/renderer.cpp); these are sized for the museum's 43 lights.
+//
+// Tile size in texels. An 8x8 grid at 512 would be 4096x4096, or 64 MB of
+// Depth32Float: affordable but wasteful. 256 gives 2048x2048 (16 MB) and, over
+// a 9-unit ortho extent, roughly 3.5 cm per texel, which is plenty for soft
+// room-scale shadows.
 inline constexpr std::uint32_t kShadowTileSize = 256;
 inline constexpr std::uint32_t kShadowAtlasColumns = 8;
 inline constexpr std::uint32_t kShadowAtlasRows = 8;
