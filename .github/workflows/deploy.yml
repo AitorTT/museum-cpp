@@ -1,0 +1,64 @@
+# Builds the web target with Emscripten and publishes it to GitHub Pages.
+#
+# Only the web build is deployed: the native target needs Dawn's prebuilt
+# library, which is MSVC-only on this project's setup (see the README), so it
+# has no place in a Pages workflow.
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a running deploy finish rather than cancelling it, but only keep one
+# queued behind it.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          # Pinned: the emdawnwebgpu port and the WGSL the shaders use are both
+          # tied to the toolchain version, so an unpinned upgrade should be a
+          # deliberate change rather than a surprise deploy.
+          version: 6.0.10
+
+      - name: Configure
+        run: emcmake cmake -S . -B build-web -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build-web
+
+      - name: Assemble the site
+        run: |
+          mkdir -p site
+          cp build-web/museum.html site/index.html
+          cp build-web/museum.js build-web/museum.wasm build-web/museum.data site/
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

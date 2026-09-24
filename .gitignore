@@ -14,10 +14,10 @@ build/
 package.json
 package-lock.json
 
-# Screenshots / scratch
-*.jpg
-*.png
-batch3-*.png
+# Screenshots / scratch. Note the leading slash: a bare *.jpg would also swallow
+# assets/textures/, which the build preloads and the deployed museum needs.
+/*.jpg
+/*.png
 
 # Emscripten output (mirrors of the build dir, just in case)
 *.wasm
