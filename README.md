@@ -124,7 +124,11 @@ capture_views.mjs     Playwright: screenshots from inside real rooms
 
 Each ceiling spot renders the museum from its own point of view into a 256x256
 tile of one 2048x2048 `Depth32Float` atlas, and a fragment is shadowed if it
-lies behind the surface its own spot can see. The pieces:
+lies behind the surface its own spot can see. The atlas is **built once at
+startup**: the geometry and the fixtures are both static, so nothing can change
+it, and lighting a frame against it costs only the shader's lookups. That also
+decouples it from `SelectLights` — which lights a frame samples changes freely
+as the camera moves, but the atlas never has to follow. The pieces:
 
 - `world/shadows.{h,cpp}` builds the light-space matrices and each light's tile
   rectangle

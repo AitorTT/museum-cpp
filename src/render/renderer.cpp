@@ -201,13 +201,13 @@ bool Renderer::Initialize(platform::Window* window, const world::Mesh& museum_me
   UploadMesh(museum_mesh, mesh_vertices_, mesh_indices_, mesh_index_count_);
   UploadMesh(sky_mesh, sky_vertices_, sky_indices_, sky_index_count_);
 
+  // The atlas depends on the museum mesh, so it is built here rather than with
+  // the other resources above. It is rendered exactly once.
+  RenderShadowAtlas();
+
   ready_ = true;
-  std::printf("Renderer: ready, %ux%u, %u museum indices, %u sky indices, %zu lights",
+  std::printf("Renderer: ready, %ux%u, %u museum indices, %u sky indices, %zu lights\n",
               width_, height_, mesh_index_count_, sky_index_count_, lights_.size());
-  if (kShadowsEnabled) {
-    std::printf(", shadow atlas %u", world::kShadowAtlasSize);
-  }
-  std::printf("\n");
   return true;
 }
 
@@ -682,10 +682,11 @@ void Renderer::SelectLights(const math::Vec3& camera_pos) {
   selected_lights_.resize(count);
 }
 
-void Renderer::RenderShadowPass() {
-  if (!kShadowsEnabled) {
+void Renderer::RenderShadowAtlas() {
+  if (!kShadowsEnabled || shadow_atlas_built_) {
     return;
   }
+  shadow_atlas_built_ = true;
 
   wgpu::CommandEncoder encoder = device_.CreateCommandEncoder();
 
@@ -708,10 +709,11 @@ void Renderer::RenderShadowPass() {
     clear_pass.End();
   }
 
-  // Only the lights this frame samples need a tile. Rendering all 43 every frame
-  // would be 43 full-museum depth draws for at most 4 used tiles.
-  for (int index : selected_lights_) {
-    const std::size_t light_index = static_cast<std::size_t>(index);
+  // Every light gets a tile, not just the ones this frame samples. This runs
+  // once, so the cost is a one-off 43 small draws of a static mesh, and in
+  // exchange the atlas never has to be rebuilt as the camera moves: which
+  // lights SelectLights picks changes freely without invalidating it.
+  for (std::size_t light_index = 0; light_index < lights_.size(); ++light_index) {
     ShadowUniforms uniforms{};
     uniforms.view_proj = shadow_views_[light_index].view_projection;
     queue_.WriteBuffer(shadow_uniforms_, 0, &uniforms, sizeof(uniforms));
@@ -754,6 +756,9 @@ void Renderer::RenderShadowPass() {
 
   wgpu::CommandBuffer commands = encoder.Finish();
   queue_.Submit(1, &commands);
+
+  std::printf("Renderer: shadow atlas %ux%u built once, %zu tiles\n",
+              world::kShadowAtlasSize, world::kShadowAtlasSize, lights_.size());
 }
 
 void Renderer::RenderFrame(const player::ViewMatrices& matrices) {
@@ -762,8 +767,6 @@ void Renderer::RenderFrame(const player::ViewMatrices& matrices) {
   }
 
   SelectLights(matrices.camera_position);
-
-  RenderShadowPass();
 
   SceneUniforms scene{};
   scene.view_proj = matrices.view_projection;

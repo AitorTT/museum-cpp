@@ -1,13 +1,13 @@
 // WebGPU renderer: device bring-up, a configurable surface, and the frame.
 //
-// Three passes:
-//   1. shadow depth, once per light, each into its own tile of one atlas
-//   2. sky dome, filling the background
-//   3. the museum, lit by the nearest few lights and shadow-tested
+// Per frame:
+//   1. the sky dome, filling the background
+//   2. the museum, lit by the nearest few lights and shadow-tested
 //
-// The shadow pass runs every frame even though the museum is static, because
-// it is a handful of small draws; if profiling says otherwise, caching it is a
-// one-line change since nothing about the geometry moves.
+// The shadow atlas is a third pass, but it is not a per-frame one: the museum
+// geometry and the fixtures are both static, so every light's depth tile is
+// rendered once at startup and never revisited. Lighting a frame against it
+// costs only the texture lookups in the scene shader.
 #pragma once
 
 #include <cstdint>
@@ -58,8 +58,10 @@ class Renderer {
   void LoadFloorTexture(const char* assets_dir);
   void CreateSamplers();
 
-  // Renders each selected light's depth tile into the atlas.
-  void RenderShadowPass();
+  // Renders every light's depth tile into the atlas. Called once, at startup:
+  // the museum geometry and the fixtures are both static, so the atlas cannot
+  // change and there is no reason to redraw it per frame.
+  void RenderShadowAtlas();
 
   // Chooses the lights that affect this frame's viewpoint, nearest first, and
   // writes their uniforms.
@@ -118,6 +120,7 @@ class Renderer {
   std::uint32_t height_ = 0;
   bool ready_ = false;
   bool surface_configured_ = false;
+  bool shadow_atlas_built_ = false;
 };
 
 }  // namespace museum::render
