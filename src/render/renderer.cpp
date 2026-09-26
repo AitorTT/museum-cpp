@@ -40,10 +40,12 @@ struct SceneUniforms {
   float bounce[4];                      // 16
   float ceil_glow[4];                   // 16
   float light_count[4];                 // 16
+  float hover_rect[4];                  // 16  xy = atlas uv origin, zw = size
+  float painting_glow[4];               // 16  x = enabled, y = strength
   math::Mat4 light_view_proj[world::kMaxLightsPerFragment];  // 4 * 64
   GpuLight lights[world::kMaxLightsPerFragment];             // 4 * 80
 };
-static_assert(sizeof(SceneUniforms) == 64 + 11 * 16 + 4 * 64 + 4 * 80);
+static_assert(sizeof(SceneUniforms) == 64 + 13 * 16 + 4 * 64 + 4 * 80);
 
 struct SkyUniforms {
   float top[4];
@@ -69,6 +71,11 @@ constexpr float kSkyBottom[3] = {0x23 / 255.0f, 0x27 / 255.0f, 0x2f / 255.0f};
 // at sRGB (161, 0, 195) here versus (148, 0, 189) there, a close match. Raising
 // it oversaturates the walls toward magenta, which is the opposite of the goal.
 constexpr float kExposure = 1.0f;
+
+// How hard the crosshair-loved painting glows. A modest lift, because the
+// canvas is unshaded already: too much and the artwork reads as a light source
+// rather than a painting that is lit up.
+constexpr float kPaintingGlow = 0.6f;
 
 // Shadow ortho box: the spot's usable radius across, and how deep to trace.
 constexpr float kShadowExtent = 9.0f;
@@ -808,6 +815,18 @@ void Renderer::RenderShadowAtlas() {
               world::kShadowAtlasSize, world::kShadowAtlasSize, lights_.size());
 }
 
+void Renderer::SetHoveredPainting(const world::PaintingPlane* plane) {
+  if (plane == nullptr) {
+    has_hover_ = false;
+    return;
+  }
+  has_hover_ = true;
+  hover_rect_[0] = plane->u0;
+  hover_rect_[1] = plane->v0;
+  hover_rect_[2] = plane->u1 - plane->u0;
+  hover_rect_[3] = plane->v1 - plane->v0;
+}
+
 void Renderer::RenderFrame(const player::ViewMatrices& matrices) {
   if (!ready_) {
     return;
@@ -851,6 +870,18 @@ void Renderer::RenderFrame(const player::ViewMatrices& matrices) {
   // The shader turns an atlas rect into a texel offset for its PCF taps, which
   // needs the tile size in texels.
   scene.light_count[1] = static_cast<float>(world::kShadowTileSize);
+
+  // The hovered painting's atlas cell. When nothing is hovered the rect is
+  // zero-size and the shader's membership test can never match, so the glow
+  // stays off without a branch.
+  if (has_hover_) {
+    scene.hover_rect[0] = hover_rect_[0];
+    scene.hover_rect[1] = hover_rect_[1];
+    scene.hover_rect[2] = hover_rect_[2];
+    scene.hover_rect[3] = hover_rect_[3];
+  }
+  scene.painting_glow[0] = has_hover_ ? 1.0f : 0.0f;
+  scene.painting_glow[1] = kPaintingGlow;
 
   for (int i = 0; i < 3; ++i) {
     scene.sky_top[i] = kSkyTop[i];

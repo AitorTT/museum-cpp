@@ -99,6 +99,14 @@ extern "C" EMSCRIPTEN_KEEPALIVE float museumPaintingRy(int i) {
   return (i >= 0 && i < static_cast<int>(spots.size())) ? spots[i].ry : 0.0f;
 }
 
+// The painting the crosshair is on, or -1. The page reads this on a click to
+// decide whether to open the enlarge viewer, and every frame to style the
+// crosshair. Indexing matches the painting order, so the page's
+// painting_NN.jpg name is simply the index + 1.
+extern "C" EMSCRIPTEN_KEEPALIVE int museumHoveredPainting() {
+  return g_engine.hovered_painting();
+}
+
 #else
 
 int main() {

@@ -41,10 +41,53 @@
   }
   #stick-move { left: 26px; bottom: 26px; }
   #stick-look { right: 26px; bottom: 26px; }
+
+  /* Crosshair. The dot is the aim point; it grows and warms when a painting is
+     under it, which is the signal that a click will open the viewer. */
+  #crosshair {
+    position: fixed; left: 50%; top: 50%; width: 8px; height: 8px;
+    margin: -4px 0 0 -4px; border-radius: 50%;
+    background: rgba(232, 236, 242, 0.55);
+    border: 1.5px solid rgba(20, 22, 26, 0.55);
+    pointer-events: none; z-index: 8; transition: width .12s, height .12s,
+    margin .12s, background .12s, box-shadow .12s;
+  }
+  #crosshair.on {
+    width: 14px; height: 14px; margin: -7px 0 0 -7px;
+    background: rgba(255, 226, 168, 0.95);
+    box-shadow: 0 0 10px 2px rgba(255, 210, 130, 0.55);
+  }
+  #crosshair.hidden { display: none; }
+
+  /* The enlarge viewer. A plain overlay over the canvas, sized to the viewport
+     so the artwork fills the screen without ever being upscaled past its own
+     pixels. */
+  #viewer {
+    position: fixed; inset: 0; display: none; z-index: 20;
+    align-items: center; justify-content: center;
+    background: rgba(8, 9, 12, 0.92); cursor: zoom-out;
+  }
+  #viewer.open { display: flex; }
+  #viewer img {
+    max-width: 94vw; max-height: 86vh;
+    box-shadow: 0 10px 60px rgba(0, 0, 0, 0.7);
+    background: #14161a;
+  }
+  #viewer .caption {
+    position: fixed; left: 0; right: 0; bottom: 14px; text-align: center;
+    font-size: 13px; letter-spacing: 0.06em; opacity: 0.72; pointer-events: none;
+  }
 </style>
 </head>
 <body>
 <canvas id="canvas" tabindex="-1"></canvas>
+
+<div id="crosshair" class="hidden"></div>
+
+<div id="viewer">
+  <img id="viewer-image" alt="">
+  <div class="caption" id="viewer-caption"></div>
+</div>
 
 <div id="touch">
   <div class="stick" id="stick-move"><div class="knob" id="knob-move"></div></div>
@@ -166,10 +209,12 @@
 
   document.addEventListener('pointerlockchange', function () {
     if (isTouch) return;
-    Module.museumSetPointerLocked(!!document.pointerLockElement);
-    if (!document.pointerLockElement) {
-      overlay.classList.remove('hidden');
-    }
+    var locked = !!document.pointerLockElement;
+    Module.museumSetPointerLocked(locked);
+    // Hide the entry overlay whenever the lock is held, and bring it back when
+    // it is dropped. Hiding on lock (rather than only at entry) is what lets
+    // the enlarge viewer hand the pointer back and take it again on close.
+    overlay.classList.toggle('hidden', locked);
   });
 
   document.addEventListener('pointermove', function (e) {
@@ -182,6 +227,107 @@
   if (isTouch) {
     hint.textContent = 'Tap to enter \u2014 left stick to move, right stick to look';
   }
+
+  // --- Painting hover and the enlarge viewer -------------------------------
+
+  var crosshair = document.getElementById('crosshair');
+  var viewer = document.getElementById('viewer');
+  var viewerImage = document.getElementById('viewer-image');
+  var viewerCaption = document.getElementById('viewer-caption');
+
+  // The C++ side raycasts the crosshair every frame; this just mirrors the
+  // result into the crosshair's look. Polled on rAF rather than pushed, because
+  // the hover is a continuous function of where the player is looking.
+  var lastHover = -1;
+  function pollHover() {
+    if (Module._museumHoveredPainting && !overlayVisible()) {
+      var hovered = Module._museumHoveredPainting();
+      if (hovered !== lastHover) {
+        lastHover = hovered;
+        crosshair.classList.toggle('on', hovered >= 0);
+      }
+      crosshair.classList.toggle('hidden', viewer.classList.contains('open'));
+    }
+    requestAnimationFrame(pollHover);
+  }
+
+  function overlayVisible() {
+    return !overlay.classList.contains('hidden');
+  }
+
+  // Loads one painting's JPEG out of the packaged filesystem and shows it. The
+  // file is served from memory, so there is nothing to fetch and nothing extra
+  // to ship: the same bytes the canvas already samples.
+  var viewerUrl = null;
+  var viewerLocked = false;
+
+  function openViewer(index) {
+    var path = '/assets/paintings/painting_' +
+        (index + 1 < 10 ? '0' : '') + (index + 1) + '.jpg';
+    var bytes;
+    try {
+      bytes = Module.FS.readFile(path);
+    } catch (e) {
+      console.warn('painting image unavailable: ' + path, e);
+      return;
+    }
+    // .slice() copies out of the WASM heap, which the Blob cannot own directly.
+    var blob = new Blob([bytes.slice()], { type: 'image/jpeg' });
+    if (viewerUrl) URL.revokeObjectURL(viewerUrl);
+    viewerUrl = URL.createObjectURL(blob);
+    viewerImage.src = viewerUrl;
+    viewerCaption.textContent = 'Painting ' + (index + 1) + ' \u2014 click or Esc to close';
+    viewer.classList.add('open');
+    crosshair.classList.add('hidden');
+    // Let go of the pointer while the artwork is up, so moving the mouse does
+    // not keep spinning the camera behind the overlay.
+    if (document.pointerLockElement) {
+      document.exitPointerLock();
+      viewerLocked = true;
+    }
+  }
+
+  function closeViewer() {
+    viewer.classList.remove('open');
+    viewerImage.removeAttribute('src');
+    if (viewerUrl) {
+      URL.revokeObjectURL(viewerUrl);
+      viewerUrl = null;
+    }
+    crosshair.classList.remove('hidden');
+    // Take the pointer back, so the player lands exactly where they were
+    // looking. The pointerlockchange handler hides the entry overlay the lock
+    // release raised behind the viewer.
+    if (viewerLocked && !isTouch) {
+      viewerLocked = false;
+      var relock = canvas.requestPointerLock();
+      if (relock && typeof relock.catch === 'function') relock.catch(function () {});
+    }
+  }
+
+  viewer.addEventListener('click', closeViewer);
+
+  // A click while playing is "use": if the crosshair is on a painting, enlarge
+  // it. The same gesture on touch. Outside the museum the overlay already owns
+  // the click, so this only fires once playing.
+  function use() {
+    if (viewer.classList.contains('open')) return;
+    if (overlayVisible()) return;
+    if (!Module._museumHoveredPainting) return;
+    var hovered = Module._museumHoveredPainting();
+    if (hovered >= 0) openViewer(hovered);
+  }
+
+  canvas.addEventListener('click', use);
+  canvas.addEventListener('touchend', function (e) {
+    // Only a tap on the canvas, not on a control; the sticks stop propagation
+    // through their own handlers.
+    if (overlayVisible()) return;
+    e.preventDefault();
+    use();
+  });
+
+  requestAnimationFrame(pollHover);
 
   // --- Touch controls ------------------------------------------------------
 
@@ -293,6 +439,13 @@
   };
 
   document.addEventListener('keydown', function (e) {
+    // Escape closes the viewer if it is open, and is swallowed so it does not
+    // also drop pointer lock and raise the entry overlay behind it.
+    if (e.code === 'Escape' && viewer.classList.contains('open')) {
+      e.preventDefault();
+      closeViewer();
+      return;
+    }
     var code = keyCodes[e.code];
     if (code && Module._museumKeyCode) {
       Module._museumKeyCode(code, 1);

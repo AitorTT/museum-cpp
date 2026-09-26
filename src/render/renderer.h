@@ -43,6 +43,11 @@ class Renderer {
   void Resize(std::uint32_t width, std::uint32_t height);
   void RenderFrame(const player::ViewMatrices& matrices);
 
+  // The painting the crosshair is on, or nullptr. Its atlas cell is handed to
+  // the scene shader, which recognises the hovered canvas from its own UV and
+  // glows only that one, so no per-painting draw or attribute is needed.
+  void SetHoveredPainting(const world::PaintingPlane* plane);
+
   bool ready() const { return ready_; }
 
  private:
@@ -123,6 +128,10 @@ class Renderer {
 
   // Per-frame light selection, reused to avoid per-frame allocation.
   std::vector<int> selected_lights_;
+
+  // Hovered painting's atlas cell, or zero-size when nothing is hovered.
+  bool has_hover_ = false;
+  float hover_rect_[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
   std::uint32_t width_ = 0;
   std::uint32_t height_ = 0;

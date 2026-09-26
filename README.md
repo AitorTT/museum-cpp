@@ -19,6 +19,7 @@ This is the performance-focused successor to the Godot museum and the Three.js
 | 5 | Real shadow mapping (atlas of per-light depth tiles) | done |
 | 6 | Paintings: 27 canvases in one atlas, framed on wall spots | done |
 | 7 | Sculpture: glTF scan placed in the spawn room, its own maps | done |
+| 8 | Painting hover glow (crosshair) and click-to-enlarge viewer | done |
 
 ### Batch 1 native build blocker
 
@@ -131,6 +132,7 @@ third_party/
 web/
   shell.html          page, canvas, pointer lock, touch controls, input bridge
 batch2_check.mjs      Playwright check: counts, spawn, eye height, collision
+batch8_check.mjs      Playwright check: painting hover glow and the viewer
 capture_views.mjs     Playwright: screenshots from inside real rooms
 ```
 
@@ -241,6 +243,38 @@ rather than just the sculpture, are worth remembering:
    inside the document, and a later member can sit earlier in the file (materials
    precede meshes; textures follow them), so each top-level lookup starts from a
    fresh copy of the document.
+
+## Painting hover and the enlarge viewer
+
+The crosshair at the screen centre doubles as the aim point. Every frame the
+engine casts a ray from the camera along its forward direction against the
+paintings' canvas planes, and takes the nearest hit within 8 m. A canvas is a
+rectangle on a plane; the hit is the ray crossing the plane within the
+rectangle. The 8 m reach covers a whole room without a painting two rooms away
+triggering through a wall, which a plane test alone cannot rule out.
+
+Two details keep it cheap and honest:
+
+- The hovered painting is identified in the shader by its **atlas cell**, which
+  the canvas UV already carries. The uniforms `hover_rect` and `painting_glow`
+  give the shader that cell and a strength; a fragment whose UV falls inside the
+  cell is the hovered canvas. No painting-index vertex attribute, no second draw
+  call, and a zero-size rect (nothing hovered) can never match, so there is no
+  branch to guard.
+- The glow is strongest at the canvas edge — a `smoothstep` on the distance to
+  the cell border — so the painting reads as outlined rather than washed out.
+  It is added after the unshaded canvas sample, tinted warm.
+
+Clicking (or tapping) while a painting is under the crosshair opens the enlarge
+viewer: a DOM overlay over the canvas. The big image is read straight out of the
+packaged filesystem with
+`Module.FS.readFile('/assets/paintings/painting_NN.jpg')` and shown through a
+`Blob` URL, so the raw JPEGs never have to be shipped or fetched separately —
+the same bytes the canvas already samples. That is why the web link options
+carry `-sFORCE_FILESYSTEM=1` and `-sEXPORTED_RUNTIME_METHODS=FS`; without them
+`Module.FS` is undefined and the viewer silently finds nothing. Escape or a
+click closes it, and the pointer is released while it is up and re-locked on
+close.
 
 ## Lighting
 

@@ -89,6 +89,27 @@ struct MuseumStats {
   float max_y = 0.0f;
 };
 
+// A painting's canvas as a plane in the world, recorded so the engine can aim
+// at it without re-deriving the frame layout. The centre sits on the mounting
+// plane; the normal points into the room.
+struct PaintingPlane {
+  float cx = 0.0f;
+  float cy = 0.0f;
+  float cz = 0.0f;
+  float nx = 0.0f;
+  float ny = 0.0f;
+  float nz = 0.0f;
+  float half_width = 0.0f;   // along the wall, in metres
+  float half_height = 0.0f;
+
+  // The atlas cell this canvas samples, so the shader can recognise the hovered
+  // painting from its own UV and light only that one.
+  float u0 = 0.0f;
+  float v0 = 0.0f;
+  float u1 = 0.0f;
+  float v1 = 0.0f;
+};
+
 class Museum {
  public:
   // Builds geometry and colliders from the layout. Call once at startup.
@@ -126,12 +147,19 @@ class Museum {
     return painting_spots_;
   }
 
+  // One entry per painting actually built, in painting order, filled by
+  // EmitMesh. Empty before EmitMesh runs.
+  const std::vector<PaintingPlane>& painting_planes() const {
+    return painting_planes_;
+  }
+
  private:
   void AddSegment(const SegmentBox& box);
   void AddCornerPatches();
 
   std::vector<SegmentBox> segments_;
   std::vector<PaintingSpot> painting_spots_;
+  std::vector<PaintingPlane> painting_planes_;
   std::vector<SpotLight> lights_;
   CollisionWorld collision_;
   MuseumStats stats_;

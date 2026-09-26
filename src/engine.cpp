@@ -100,6 +100,55 @@ world::SculptureMesh PlaceSculpture(const render::GltfModel& model) {
   return out;
 }
 
+// How far the crosshair can reach a painting. The museum's rooms are 10 m
+// across, so a painting on the far wall is about 7 m away. 8 m covers a whole
+// room. There is no occlusion test, so a painting in the next room could in
+// principle be picked through the wall, but at 8 m the ray has to be nearly
+// perpendicular to a wall to reach one, and no painting is placed on a shared
+// wall's far side at that angle; the reach keeps that case out of the frame.
+constexpr float kPaintingReach = 8.0f;
+
+// The single painting under the crosshair, or -1. The crosshair is the screen
+// centre, so the ray is simply the camera's forward direction from the camera
+// position. Each painting is a rectangle on a plane with an outward normal; a
+// hit is the ray crossing that plane within the rectangle, in front of the
+// camera. The nearest hit wins, so a painting behind another cannot win.
+int RaycastPainting(const std::vector<world::PaintingPlane>& planes,
+                    const math::Vec3& origin, const math::Vec3& dir) {
+  int best = -1;
+  float best_t = kPaintingReach;
+
+  for (std::size_t i = 0; i < planes.size(); ++i) {
+    const world::PaintingPlane& p = planes[i];
+    const math::Vec3 normal{p.nx, p.ny, p.nz};
+    const float denom = math::Dot(normal, dir);
+    // Parallel to the wall face: no crossing to test.
+    if (std::fabs(denom) < 1e-6f) {
+      continue;
+    }
+    const math::Vec3 to_plane{p.cx - origin.x, p.cy - origin.y, p.cz - origin.z};
+    const float t = math::Dot(to_plane, normal) / denom;
+    // Behind the camera, or beyond reach, or not the nearest yet.
+    if (t <= 0.0f || t >= best_t) {
+      continue;
+    }
+    // Where on the canvas the ray lands, in the plane's own 2D basis. The
+    // canvas is horizontal on the wall, so its right axis is the normal turned
+    // 90 degrees about Y: (nz, 0, -nx) matches the layout's rotation.
+    const math::Vec3 hit{origin.x + dir.x * t, origin.y + dir.y * t,
+                         origin.z + dir.z * t};
+    const math::Vec3 offset{hit.x - p.cx, hit.y - p.cy, hit.z - p.cz};
+    const float local_x = offset.x * p.nz - offset.z * p.nx;
+    const float local_y = offset.y;
+    if (std::fabs(local_x) <= p.half_width &&
+        std::fabs(local_y) <= p.half_height) {
+      best = static_cast<int>(i);
+      best_t = t;
+    }
+  }
+  return best;
+}
+
 }  // namespace
 
 bool Engine::Initialize(const char* title, std::uint32_t width, std::uint32_t height) {
@@ -199,7 +248,20 @@ void Engine::Frame() {
                            ? static_cast<float>(window_.width()) /
                                  static_cast<float>(window_.height())
                            : 1.0f;
-  renderer_.RenderFrame(player_.BuildViewMatrices(aspect));
+  const player::ViewMatrices matrices = player_.BuildViewMatrices(aspect);
+
+  // Aiming is the crosshair at the screen centre, which is exactly the camera's
+  // forward direction. The planes carry the canvas layout, so this needs no
+  // knowledge of how a painting was framed.
+  const std::vector<world::PaintingPlane>& planes = museum_.painting_planes();
+  hovered_painting_ =
+      RaycastPainting(planes, matrices.camera_position, player_.Forward());
+  renderer_.SetHoveredPainting(
+      hovered_painting_ >= 0
+          ? &planes[static_cast<std::size_t>(hovered_painting_)]
+          : nullptr);
+
+  renderer_.RenderFrame(matrices);
 
   window_.EndFrame();
 }

@@ -64,6 +64,11 @@ if(EMSCRIPTEN)
     -sEXIT_RUNTIME=0
     -sASYNCIFY=1                 # lets Initialize await adapter/device
     -sASYNCIFY_IMPORTS=["emscripten_sleep"]
+    # The page reads the raw painting JPEGs out of the packaged filesystem to
+    # show them full-size in the enlarge viewer, so FS must be exported onto
+    # Module.
+    -sFORCE_FILESYSTEM=1
+    -sEXPORTED_RUNTIME_METHODS=FS
     # Package the assets tree into the virtual filesystem at /assets, so
     # stb_image can fopen them the same way it does natively.
     --preload-file "${CMAKE_CURRENT_SOURCE_DIR}/assets@/assets"

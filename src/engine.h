@@ -37,6 +37,9 @@ class Engine {
   player::Player& mutable_player() { return player_; }
   const render::Renderer& renderer() const { return renderer_; }
 
+  // Index of the painting the crosshair is on, or -1. Updated every frame.
+  int hovered_painting() const { return hovered_painting_; }
+
  private:
   void HandleResize();
 
@@ -46,6 +49,7 @@ class Engine {
   player::Player player_;
   render::Renderer renderer_;
   bool initialized_ = false;
+  int hovered_painting_ = -1;
 };
 
 }  // namespace museum

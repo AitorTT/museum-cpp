@@ -151,8 +151,11 @@ void AppendLocalQuad(const PaintingSpot& spot, float local_x0, float local_y0,
 // One painting: four frame bars plus the canvas, from Painting.ts. The frame is
 // a lit surface in the wall material (a dark grey box), the canvas an unshaded
 // atlas sample floating just proud of it.
+//
+// Also records the canvas as a world-space plane into `planes`, so the engine can
+// raycast against paintings without knowing the frame layout.
 void AppendPainting(const PaintingSpot& spot, const Museum::PaintingUv& uv,
-                    Mesh& mesh) {
+                    std::vector<PaintingPlane>& planes, Mesh& mesh) {
   const float s = museum::config::kPaintingScale;
   const float fp = 0.05f;  // FRAME_PADDING
   const float fd = 0.08f;  // FRAME_DEPTH
@@ -195,6 +198,26 @@ void AppendPainting(const PaintingSpot& spot, const Museum::PaintingUv& uv,
                                   {uv.u0, uv.v0}};
   AppendLocalQuad(spot, -cw * 0.5f, -ch * 0.5f, cw * 0.5f, ch * 0.5f,
                   canvas_z, canvas_uvs, kMaterialPainting, 0, 0, 1, mesh);
+
+  // The canvas plane, in the same rotated frame AppendLocalQuad used: local +Z
+  // is the room-facing normal, and the canvas centre is the spot pushed out by
+  // canvas_z along that normal.
+  const float c = std::cos(spot.ry);
+  const float sn = std::sin(spot.ry);
+  PaintingPlane plane;
+  plane.cx = spot.x + canvas_z * sn;
+  plane.cy = spot.y;
+  plane.cz = spot.z + canvas_z * c;
+  plane.nx = sn;
+  plane.ny = 0.0f;
+  plane.nz = c;
+  plane.half_width = cw * 0.5f;
+  plane.half_height = ch * 0.5f;
+  plane.u0 = uv.u0;
+  plane.v0 = uv.v0;
+  plane.u1 = uv.u1;
+  plane.v1 = uv.v1;
+  planes.push_back(plane);
 }
 
 }  // namespace
@@ -339,8 +362,12 @@ void Museum::EmitMesh(Mesh& out, const std::vector<PaintingUv>& painting_uvs,
   out.painting_index_begin = static_cast<std::uint32_t>(out.indices.size());
   const std::size_t painting_count =
       std::min(painting_spots_.size(), painting_uvs.size());
+  // Rebuilt from scratch: EmitMesh may be called more than once (a relight, a
+  // debug pass), and the planes must match the paintings just emitted.
+  painting_planes_.clear();
+  painting_planes_.reserve(painting_count);
   for (std::size_t i = 0; i < painting_count; ++i) {
-    AppendPainting(painting_spots_[i], painting_uvs[i], out);
+    AppendPainting(painting_spots_[i], painting_uvs[i], painting_planes_, out);
   }
   out.painting_index_count =
       static_cast<std::uint32_t>(out.indices.size()) - out.painting_index_begin;

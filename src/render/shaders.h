@@ -50,6 +50,8 @@ struct Uniforms {
   bounce : vec4<f32>,       // x = wall, y = floor, z = min, w = max
   ceil_glow : vec4<f32>,    // x = base, y = glow, z = sigma^2
   light_count : vec4<f32>,  // x = count, y = shadow tile size in texels
+  hover_rect : vec4<f32>,   // xy = atlas uv origin, zw = size (0 when none)
+  painting_glow : vec4<f32>,// x = enabled, y = strength
   light_view_proj : array<mat4x4<f32>, 4>,
   lights : array<Light, 4>,
 };
@@ -294,7 +296,22 @@ fn fs_main(in : VertexOut) -> @location(0) vec4<f32> {
   // so the sample arrives linear, matching the rest of the pipeline.
   let is_painting = abs(in.material - MAT_PAINTING) < 0.5;
   let canvas = textureSample(painting_atlas, floor_sampler, in.uv).rgb;
-  color = select(color, canvas, is_painting);
+
+  // Hover glow. The hovered painting is identified by its atlas cell, which the
+  // canvas UV already carries: no painting index attribute and no extra draw.
+  // A zero-size rect (nothing hovered) can never contain a UV, so this is off
+  // without a branch. The glow is strongest at the canvas edge, so the painting
+  // reads as outlined rather than washed out.
+  var glow = 0.0;
+  if (u.painting_glow.x > 0.5) {
+    let local = (in.uv - u.hover_rect.xy) / max(u.hover_rect.zw, vec2<f32>(1.0e-6));
+    let inside = local.x > 0.0 && local.x < 1.0 && local.y > 0.0 && local.y < 1.0;
+    if (inside) {
+      let edge = min(min(local.x, 1.0 - local.x), min(local.y, 1.0 - local.y));
+      glow = (1.0 - smoothstep01(0.0, 0.12, edge)) * u.painting_glow.y;
+    }
+  }
+  color = select(color, canvas + glow * vec3<f32>(1.0, 0.85, 0.55), is_painting);
 
   color = color * u.tonemap.x;
   if (u.tonemap.y > 0.5) {
