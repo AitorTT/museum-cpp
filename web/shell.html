@@ -82,6 +82,27 @@
   var isTouch = window.matchMedia &&
       window.matchMedia('(pointer: coarse)').matches;
 
+  // Feature detection can be wrong -- a tablet in desktop mode, a phone with a
+  // mouse attached, a browser that reports a fine pointer. Rather than trust it,
+  // the first real touch event promotes the page to touch controls. `enableTouch`
+  // is idempotent so both paths can call it.
+  //
+  // A touchscreen laptop reports a fine pointer *and* sends touch events, and
+  // for it the mouse is the better control, so the promotion only happens when
+  // no fine pointer exists. That is the case the media query gets wrong.
+  var hasFinePointer = window.matchMedia &&
+      window.matchMedia('(any-pointer: fine)').matches;
+
+  function enableTouch() {
+    if (isTouch || hasFinePointer) return;
+    isTouch = true;
+    hint.textContent =
+        'Tap to enter \u2014 left stick to move, drag the right side to look';
+    if (!overlay.classList.contains('hidden')) return;
+    document.getElementById('touch').classList.add('on');
+    Module.museumSetPointerLocked(true);
+  }
+
   // The C++ platform layer installs these; they defer to the exported symbols.
   Module.museumApplyLook = function (dx, dy) {
     if (Module._museumApplyLook) Module._museumApplyLook(dx, dy);
@@ -128,9 +149,15 @@
     }
   }
 
+  // The first real touch anywhere promotes to touch controls, even if the
+  // pointer media query said otherwise. Once controls are visible there is
+  // nothing else to do, which is what makes enableTouch idempotent.
+  window.addEventListener('touchstart', enableTouch, { passive: true });
+
   overlay.addEventListener('click', enterMuseum);
   overlay.addEventListener('touchend', function (e) {
     e.preventDefault();
+    enableTouch();
     enterMuseum();
   });
 
