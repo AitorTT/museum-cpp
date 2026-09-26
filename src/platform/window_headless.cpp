@@ -135,6 +135,18 @@ void Window::ClearStick() {
   UpdateMoveAxes();
 }
 
+void Window::SetLookStick(float x, float y) {
+  input_.look_stick_active = true;
+  input_.look_stick_x = x;
+  input_.look_stick_y = y;
+}
+
+void Window::ClearLookStick() {
+  input_.look_stick_active = false;
+  input_.look_stick_x = 0.0f;
+  input_.look_stick_y = 0.0f;
+}
+
 void Window::UpdateMoveAxes() {
   // An on-screen stick owns the axes while it is being held. Letting the key
   // path run here would zero them, because the keys it checks are all up.
@@ -193,6 +205,18 @@ EMSCRIPTEN_KEEPALIVE void museumSetStick(int active, float forward, float strafe
       museum::platform::g_window->SetStick(forward, strafe);
     } else {
       museum::platform::g_window->ClearStick();
+    }
+  }
+}
+
+// Right-stick look deflection, -1..1. This is a rate, not a delta: the engine
+// applies it every frame while held, so there is no per-event bookkeeping here.
+EMSCRIPTEN_KEEPALIVE void museumSetLookStick(int active, float x, float y) {
+  if (museum::platform::g_window != nullptr) {
+    if (active != 0) {
+      museum::platform::g_window->SetLookStick(x, y);
+    } else {
+      museum::platform::g_window->ClearLookStick();
     }
   }
 }

@@ -44,6 +44,14 @@ struct InputState {
   // user is still holding.
   bool stick_active = false;
 
+  // Right-stick deflection for looking, -1..1, when the touch look stick is
+  // held. Unlike the mouse, which arrives as accumulated deltas, this is a
+  // *rate*: the engine turns it into a per-frame delta using dt, so a held
+  // stick rotates steadily and a released one stops.
+  float look_stick_x = 0.0f;
+  float look_stick_y = 0.0f;
+  bool look_stick_active = false;
+
   // Accumulated since the last frame, in pixels. Drained by Player::Update.
   float look_yaw = 0.0f;
   float look_pitch = 0.0f;
@@ -131,6 +139,11 @@ class Window {
 
   // Releases the stick and hands the axes back to the keyboard.
   void ClearStick();
+
+  // Right-stick look deflection, -1..1 per axis. active distinguishes a
+  // centred-but-held stick from a released one, the same way SetStick does.
+  void SetLookStick(float x, float y);
+  void ClearLookStick();
 #endif
 
  private:

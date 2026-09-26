@@ -75,9 +75,12 @@ Open <http://localhost:8000/museum.html>. Click to enter, WASD to move, mouse to
 look. You should see a world-locked grid that streams past as you walk.
 
 On a touch device (phone or tablet) the page detects a coarse pointer and swaps
-the controls: tap to enter, a left stick to move, and a drag anywhere on the
-right half to look. Pointer lock does not exist for touch, so that path is
-skipped rather than requested-and-rejected.
+the controls: tap to enter, a left stick to move, and a right stick to look. The
+move stick is analog, so a small deflection creeps. The look stick is a
+rotation *rate* rather than a drag: the engine applies it every frame while it
+is held, so the camera turns steadily and stops the moment you let go. Pointer
+lock does not exist for touch, so that path is skipped rather than
+requested-and-rejected.
 
 ## Build (native)
 

@@ -23,6 +23,11 @@ inline constexpr float kSpeed = 7.0f;               // metres/second
 inline constexpr float kGravity = 9.8f * 3.0f;      // the JS museum triples it
 inline constexpr float kMaxPitchDegrees = 45.0f;
 inline constexpr float kMouseSensitivity = 0.005f;  // radians per pixel
+
+// Look-stick turn rate at full deflection, in mouse-equivalent pixels per
+// second. Expressed through kMouseSensitivity so the two cannot drift apart:
+// 440 px/s is about 2.2 rad/s, a comfortable full sweep in a couple of seconds.
+inline constexpr float kLookStickSpeed = 440.0f;
 inline constexpr float kInitialPitch = -0.281186f;  // the baked camera tilt
 inline constexpr float kFov = 50.0f;
 

@@ -40,19 +40,15 @@
     border: 1.5px solid rgba(200, 208, 220, 0.55);
   }
   #stick-move { left: 26px; bottom: 26px; }
-  /* The look pad is a large invisible drag area over the right of the screen. */
-  #look-pad {
-    position: fixed; right: 0; top: 0; width: 55%; height: 100%;
-    touch-action: none; z-index: 9;
-  }
+  #stick-look { right: 26px; bottom: 26px; }
 </style>
 </head>
 <body>
 <canvas id="canvas" tabindex="-1"></canvas>
 
 <div id="touch">
-  <div id="look-pad"></div>
   <div class="stick" id="stick-move"><div class="knob" id="knob-move"></div></div>
+  <div class="stick" id="stick-look"><div class="knob" id="knob-look"></div></div>
 </div>
 
 <div id="overlay">
@@ -97,7 +93,7 @@
     if (isTouch || hasFinePointer) return;
     isTouch = true;
     hint.textContent =
-        'Tap to enter \u2014 left stick to move, drag the right side to look';
+        'Tap to enter \u2014 left stick to move, right stick to look';
     if (!overlay.classList.contains('hidden')) return;
     document.getElementById('touch').classList.add('on');
     Module.museumSetPointerLocked(true);
@@ -117,6 +113,13 @@
   Module.museumSetStick = function (active, forward, strafe) {
     if (Module._museumSetStick) {
       Module._museumSetStick(active ? 1 : 0, forward, strafe);
+    }
+  };
+  // Right-stick look deflection, -1..1. A rate, not a delta: the engine applies
+  // it every frame while active.
+  Module.museumSetLookStick = function (active, x, y) {
+    if (Module._museumSetLookStick) {
+      Module._museumSetLookStick(active ? 1 : 0, x, y);
     }
   };
 
@@ -177,124 +180,109 @@
   });
 
   if (isTouch) {
-    hint.textContent = 'Tap to enter \u2014 left stick to move, drag the right side to look';
+    hint.textContent = 'Tap to enter \u2014 left stick to move, right stick to look';
   }
 
   // --- Touch controls ------------------------------------------------------
 
-  // Screen pixels per pixel of look delta. The engine's sensitivity is tuned
-  // for mouse movement, so this is calibrated down to feel like a drag rather
-  // than a flick on a high-DPI phone.
-  var kLookScale = 1.6;
-
-  // Left stick: track one touch by identifier so a second finger on the look
-  // pad never steals it.
-  var moveStick = document.getElementById('stick-move');
-  var moveKnob = document.getElementById('knob-move');
-  var moveTouchId = null;
+  // Both sticks are the same widget. Each tracks its own touch identifier so a
+  // finger on one never drives the other, and each reports through a callback
+  // that takes (active, x, y) in -1..1.
   var stickRadius = 66;  // half the 132px pad; matches the CSS
+  var kDeadzone = 0.12;
 
-  function setKnob(el, dx, dy) {
-    el.style.transform = 'translate(' + dx + 'px,' + dy + 'px)';
-  }
+  function makeStick(rootId, knobId, onValue) {
+    var root = document.getElementById(rootId);
+    var knob = document.getElementById(knobId);
+    var touchId = null;
 
-  function stickOrigin() {
-    var r = moveStick.getBoundingClientRect();
-    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-  }
-
-  function updateStick(t) {
-    var o = stickOrigin();
-    var dx = t.clientX - o.x;
-    var dy = t.clientY - o.y;
-    var dist = Math.sqrt(dx * dx + dy * dy);
-    // Clamp the knob to the ring, but keep the full deflection when the finger
-    // travels past it -- the direction still means something out there.
-    var clamp = dist > stickRadius ? stickRadius / dist : 1;
-    setKnob(moveKnob, dx * clamp, dy * clamp);
-
-    // Normalise by the radius, then apply a small deadzone so a resting thumb
-    // does not drift the player.
-    var nx = (dx / stickRadius);
-    var ny = (dy / stickRadius);
-    var mag = Math.min(1, Math.sqrt(nx * nx + ny * ny));
-    if (mag < 0.12) {
-      Module.museumSetStick(false, 0, 0);
-      return;
+    function origin() {
+      var r = root.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
     }
-    // Screen down (+y) is backwards, so forward is -ny. The engine normalises
-    // the vector itself, so passing the magnitude here is safe.
-    Module.museumSetStick(true, -ny, nx);
+
+    function update(t) {
+      var o = origin();
+      var dx = t.clientX - o.x;
+      var dy = t.clientY - o.y;
+      var dist = Math.sqrt(dx * dx + dy * dy);
+      // Clamp the knob to the ring, but keep full deflection when the finger
+      // travels past it -- the direction still means something out there.
+      var clamp = dist > stickRadius ? stickRadius / dist : 1;
+      knob.style.transform =
+          'translate(' + (dx * clamp) + 'px,' + (dy * clamp) + 'px)';
+
+      var nx = dx / stickRadius;
+      var ny = dy / stickRadius;
+      var mag = Math.min(1, Math.sqrt(nx * nx + ny * ny));
+      if (mag < kDeadzone) {
+        onValue(false, 0, 0);
+        return;
+      }
+      // Screen down (+y) is a negative axis on both sticks: pushing up means
+      // forward on the move stick and look-up on the look stick.
+      onValue(true, nx, -ny);
+    }
+
+    function release() {
+      touchId = null;
+      knob.style.transform = 'translate(0px,0px)';
+      onValue(false, 0, 0);
+    }
+
+    root.addEventListener('touchstart', function (e) {
+      e.preventDefault();
+      if (touchId !== null) return;
+      var t = e.changedTouches[0];
+      touchId = t.identifier;
+      update(t);
+    }, { passive: false });
+
+    return {
+      owns: function (id) { return id === touchId; },
+      // A touch that started on the pad but has strayed: keep tracking it.
+      handleMove: function (t) { update(t); },
+      release: release,
+    };
   }
 
-  function endStick() {
-    moveTouchId = null;
-    setKnob(moveKnob, 0, 0);
-    Module.museumSetStick(false, 0, 0);
-  }
+  var moveStick = makeStick('stick-move', 'knob-move', function (a, x, y) {
+    // The engine normalises the vector, so passing the raw axes is safe; x is
+    // strafe, y is forward.
+    Module.museumSetStick(a, y, x);
+  });
 
-  moveStick.addEventListener('touchstart', function (e) {
-    e.preventDefault();
-    if (moveTouchId !== null) return;
-    var t = e.changedTouches[0];
-    moveTouchId = t.identifier;
-    updateStick(t);
-  }, { passive: false });
+  var lookStick = makeStick('stick-look', 'knob-look', function (a, x, y) {
+    Module.museumSetLookStick(a, x, y);
+  });
 
-  // Look pad: drag anywhere on the right side. Deltas are per-move-event, so
-  // there is nothing to reset when the finger lifts.
-  var lookPad = document.getElementById('look-pad');
-  var lookTouchId = null;
-  var lookLast = null;
-
-  lookPad.addEventListener('touchstart', function (e) {
-    e.preventDefault();
-    if (lookTouchId !== null) return;
-    var t = e.changedTouches[0];
-    lookTouchId = t.identifier;
-    lookLast = { x: t.clientX, y: t.clientY };
-  }, { passive: false });
+  var sticks = [moveStick, lookStick];
 
   document.addEventListener('touchmove', function (e) {
-    var i;
+    var i, s;
     for (i = 0; i < e.changedTouches.length; ++i) {
       var t = e.changedTouches[i];
-      if (t.identifier === moveTouchId) {
-        e.preventDefault();
-        updateStick(t);
-      } else if (t.identifier === lookTouchId) {
-        e.preventDefault();
-        var dx = (t.clientX - lookLast.x) * kLookScale;
-        var dy = (t.clientY - lookLast.y) * kLookScale;
-        lookLast = { x: t.clientX, y: t.clientY };
-        Module.museumApplyLook(dx, dy);
+      for (s = 0; s < sticks.length; ++s) {
+        if (sticks[s].owns(t.identifier)) {
+          e.preventDefault();
+          sticks[s].handleMove(t);
+        }
       }
     }
   }, { passive: false });
 
-  document.addEventListener('touchend', function (e) {
-    var i;
+  function releaseTouches(e) {
+    var i, s;
     for (i = 0; i < e.changedTouches.length; ++i) {
       var t = e.changedTouches[i];
-      if (t.identifier === moveTouchId) endStick();
-      if (t.identifier === lookTouchId) {
-        lookTouchId = null;
-        lookLast = null;
+      for (s = 0; s < sticks.length; ++s) {
+        if (sticks[s].owns(t.identifier)) sticks[s].release();
       }
     }
-  });
+  }
 
-  document.addEventListener('touchcancel', function (e) {
-    var i;
-    for (i = 0; i < e.changedTouches.length; ++i) {
-      var t = e.changedTouches[i];
-      if (t.identifier === moveTouchId) endStick();
-      if (t.identifier === lookTouchId) {
-        lookTouchId = null;
-        lookLast = null;
-      }
-    }
-  });
+  document.addEventListener('touchend', releaseTouches);
+  document.addEventListener('touchcancel', releaseTouches);
 
   // DOM code -> index into the C++ table in window_headless.cpp. Passing a
   // number avoids marshalling strings across the WASM boundary every keypress.

@@ -56,6 +56,18 @@ void Engine::Frame() {
   move.forward = window_.input().move_forward;
   move.strafe = window_.input().move_strafe;
 
+  // A held look stick is a rotation rate, but the look path is expressed in
+  // pixel deltas (the same units a mouse reports), so convert using dt. At full
+  // deflection this turns at kLookStickSpeed radians per second.
+  platform::InputState& input = window_.mutable_input();
+  if (input.look_stick_active) {
+    const float pixels = player::kLookStickSpeed * dt;
+    // y is screen-down, so pushing the stick up (negative y) must look up,
+    // which is the same sign the mouse uses for a negative dy.
+    input.look_yaw += -input.look_stick_x * pixels;
+    input.look_pitch += -input.look_stick_y * pixels;
+  }
+
   player_.Update(dt, move, window_.input());
 
   const float aspect = window_.height() > 0
