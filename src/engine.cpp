@@ -62,9 +62,12 @@ void Engine::Frame() {
   platform::InputState& input = window_.mutable_input();
   if (input.look_stick_active) {
     const float pixels = player::kLookStickSpeed * dt;
-    // y is screen-down, so pushing the stick up (negative y) must look up,
-    // which is the same sign the mouse uses for a negative dy.
-    input.look_yaw += -input.look_stick_x * pixels;
+    // Both axes are already in the mouse's convention: x is screen-right
+    // positive and y is screen-down positive, which is what ApplyLook expects
+    // (it subtracts both, so positive dx/dy turn right and look down). The
+    // stick supplies x that way and negates y on the way out, so no further
+    // sign change belongs here.
+    input.look_yaw += input.look_stick_x * pixels;
     input.look_pitch += -input.look_stick_y * pixels;
   }
 
