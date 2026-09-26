@@ -31,7 +31,7 @@ SkyMesh BuildSkyDome(float radius, int segments, int rings) {
       vertex.nz = -r * std::sin(theta);
       vertex.u = u;
       vertex.v = v;
-      vertex.is_floor = 0.0f;
+      vertex.material = world::kMaterialWall;
       mesh.vertices.push_back(vertex);
     }
   }

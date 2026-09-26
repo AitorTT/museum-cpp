@@ -17,6 +17,7 @@ This is the performance-focused successor to the Godot museum and the Three.js
 | 3 | Materials, floor texture, sky dome, tonemapping, sRGB | done |
 | 4 | Ceiling spot lighting (43 lights, per-pixel) | done |
 | 5 | Real shadow mapping (atlas of per-light depth tiles) | done |
+| 6 | Paintings: 27 canvases in one atlas, framed on wall spots | done |
 
 ### Batch 1 native build blocker
 
@@ -118,8 +119,12 @@ src/
     museum.{h,cpp}    builds every room, corner patches, and the merged mesh
     sky.{h,cpp}       the gradient dome
     shadows.{h,cpp}   light-space matrices and shadow-atlas tile rectangles
+  render/
+    painting_atlas.{h,cpp}  packs the 27 canvases into one texture
 assets/
   textures/floor_wall1.jpg   the floor brick texture
+  paintings/painting_01..27.jpg  the canvases, numbered in assignment order
+  models/Untitled.glb        the sculpture (Batch 7, not yet drawn)
 third_party/
   stb_image.h         vendored single-header image decoder
 web/
@@ -172,6 +177,32 @@ neighbour's fixture can be selected for a room corner. That is now harmless:
 a light behind a wall cannot see the fragment, so its shadow lookup returns 0
 and it contributes nothing. Selection decides which lights are worth shading;
 the shadow map decides which of those actually reach the surface.
+
+## Paintings
+
+27 canvases hang on the museum's walls, ported from the JS museum's
+`paintingList.ts` in the same order, so each painting lands in the same room on
+both builds. Two pieces make it work:
+
+- `render/painting_atlas.{h,cpp}` decodes all 27 JPEGs, scales each to a 512px
+  long side, and shelf-packs them into one 4096-wide texture. One texture rather
+  than 27 means one binding for the whole museum: no per-painting bind group and
+  no texture switching as the camera turns. The images are mixed portrait and
+  landscape, so a fixed grid would waste most of the atlas; shelf packing keeps
+  it near-square without per-image pixel reflow.
+- `Museum::EmitMesh` appends a dark frame and an unshaded canvas at each of the
+  27 eligible spots, with the canvas UVs already scaled into its atlas cell.
+
+The room assignment is the ported `RoomBuilder` rule: a room gets a painting
+unless it has three or more doorways, and the list is consumed in room order, so
+27 of the 39 eligible spots are filled and the rest stay bare. That is the JS
+behaviour, not an omission.
+
+There is one material id per surface in the vertex (see `kMaterial*` in
+`museum.h`): walls and frames are lit, floors sample the floor texture, and
+canvases are **unshaded**. Unshaded matters: the JS museum draws canvases with a
+basic material, so the artwork reads at its own brightness instead of being
+dimmed by wherever its wall happens to sit relative to a fixture.
 
 ## Lighting
 

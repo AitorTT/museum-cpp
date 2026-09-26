@@ -18,6 +18,7 @@
 #include "core/math.h"
 #include "platform/window.h"
 #include "player/player.h"
+#include "render/texture.h"
 #include "world/lights.h"
 #include "world/museum.h"
 #include "world/shadows.h"
@@ -36,7 +37,7 @@ class Renderer {
   bool Initialize(platform::Window* window, const world::Mesh& museum_mesh,
                   const world::SkyMesh& sky_mesh,
                   const std::vector<world::SpotLight>& lights,
-                  const char* assets_dir);
+                  const char* assets_dir, const Image& painting_atlas);
 
   void Resize(std::uint32_t width, std::uint32_t height);
   void RenderFrame(const player::ViewMatrices& matrices);
@@ -106,6 +107,8 @@ class Renderer {
   wgpu::TextureView floor_view_;
   wgpu::Sampler floor_sampler_;
   wgpu::Sampler shadow_sampler_;
+  wgpu::Texture painting_texture_;
+  wgpu::TextureView painting_view_;
 
   wgpu::Texture depth_texture_;
   wgpu::TextureView depth_view_;

@@ -1,6 +1,10 @@
 #include "engine.h"
 
 #include <cstdio>
+#include <string>
+#include <vector>
+
+#include "render/painting_atlas.h"
 
 namespace museum {
 
@@ -13,10 +17,23 @@ bool Engine::Initialize(const char* title, std::uint32_t width, std::uint32_t he
       stats.rooms, stats.segments, stats.colliders, stats.painting_spots,
       stats.min_y, stats.max_y);
 
+  // The paintings atlas is built before the mesh, because the mesh needs each
+  // painting's rectangle to write atlas UVs into the canvas vertices. Decoding
+  // 27 JPEGs is the slowest part of startup.
+  const render::PaintingAtlas paintings =
+      render::BuildPaintingAtlas(std::string(kAssetsDir) + "/paintings", "jpg");
+
+  std::vector<world::Museum::PaintingUv> painting_uvs;
+  painting_uvs.reserve(paintings.entries.size());
+  for (const render::PaintingAtlasEntry& e : paintings.entries) {
+    painting_uvs.push_back({e.u0, e.v0, e.u1, e.v1, e.aspect});
+  }
+
   world::Mesh mesh;
-  museum_.EmitMesh(mesh);
-  std::printf("Museum: mesh %zu vertices, %zu indices\n", mesh.vertices.size(),
-              mesh.indices.size());
+  museum_.EmitMesh(mesh, painting_uvs);
+  std::printf("Museum: mesh %zu vertices, %zu indices (%u painting indices)\n",
+              mesh.vertices.size(), mesh.indices.size(),
+              mesh.painting_index_count);
 
   const world::SkyMesh sky = world::BuildSkyDome();
 
@@ -26,7 +43,8 @@ bool Engine::Initialize(const char* title, std::uint32_t width, std::uint32_t he
 
   player_.SetWorld(&museum_.collision());
 
-  if (!renderer_.Initialize(&window_, mesh, sky, museum_.lights(), kAssetsDir)) {
+  if (!renderer_.Initialize(&window_, mesh, sky, museum_.lights(), kAssetsDir,
+                            paintings.image)) {
     return false;
   }
 

@@ -42,4 +42,31 @@ await shot("doorway", -5.0, Y, 10.0, -Math.PI / 2, 0.0);
 // to catch the sky if any seam exists, and check fog at height.
 await shot("topfloor", -10.0, 16.25, 17.0, Math.PI, 0.4);
 
+// A painting, framed and centred. The spot's own rotation gives the direction
+// to stand off along, so this works whatever wall each painting landed on
+// rather than hard-coding a room. Painting 3 is landscape, 14 is portrait, so
+// the pair covers both atlas orientations.
+async function shotPainting(index, name) {
+  const spot = await page.evaluate((i) => [
+    _museumPaintingX(i), _museumPaintingY(i), _museumPaintingZ(i),
+    _museumPaintingRy(i),
+  ], index);
+  const [x, y, z, ry] = spot;
+  // The mount's +Z faces into the room, rotated by ry.
+  const nx = Math.sin(ry);
+  const nz = Math.cos(ry);
+  const dist = 3.5;
+  // Forward() = (-sin yaw, 0, -cos yaw); aim it back along -n.
+  const yaw = Math.atan2(nx, nz);
+  await page.evaluate(
+    ([px, py, pz, pyaw]) => _museumSetPose(px, py, pz, pyaw, 0.0),
+    [x + nx * dist, y, z + nz * dist, yaw],
+  );
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: `batch6-painting-${name}.png` });
+  console.log(`painting-${name}: spot=(${x.toFixed(2)}, ${z.toFixed(2)}) ry=${ry.toFixed(2)}`);
+}
+await shotPainting(3, "landscape");
+await shotPainting(14, "portrait");
+
 await browser.close();

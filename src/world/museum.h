@@ -26,19 +26,33 @@ struct Vertex {
   float nz = 0.0f;
   float u = 0.0f;
   float v = 0.0f;
-  // 1.0 for floor triangles, 0.0 otherwise. Lets one draw call carry both
-  // materials without splitting into two pipelines.
-  float is_floor = 0.0f;
+  // Material selector, so one draw call carries every surface. The shader
+  // switches on it: 0 = wall/ceiling (lit, wall colour), 1 = floor (lit, floor
+  // texture), 2 = painting canvas (unshaded, from the paintings atlas, with the
+  // UV already in atlas space), 3 = painting frame (lit, dark grey).
+  float material = 0.0f;
 };
+
+// Legacy alias: the floor range used to be flagged with a boolean, and the
+// renderer's floor_index_* range still marks it.
+inline constexpr float kMaterialWall = 0.0f;
+inline constexpr float kMaterialFloor = 1.0f;
+inline constexpr float kMaterialPainting = 2.0f;
+inline constexpr float kMaterialFrame = 3.0f;
 
 struct Mesh {
   std::vector<Vertex> vertices;
   std::vector<std::uint32_t> indices;
 
-  // Part of the mesh that belongs to floors, so it can be given the floor
-  // material (and its texture) when the renderer gains materials.
+  // The range of indices that belongs to floors, kept so the renderer can tell
+  // the floor span apart in profiling and so the shader contract stays obvious.
   std::uint32_t floor_index_begin = 0;
   std::uint32_t floor_index_count = 0;
+
+  // The range of indices that belongs to painting canvases. Drawn after the
+  // floors, unshaded, from the atlas.
+  std::uint32_t painting_index_begin = 0;
+  std::uint32_t painting_index_count = 0;
 };
 
 struct MuseumStats {
@@ -56,13 +70,28 @@ class Museum {
   void Build();
 
   // Emits the museum into one merged, indexed mesh: walls and ceilings first,
-  // then the floor triangles. Floors come last so they occupy a contiguous
-  // index range the renderer can bind a floor material to.
-  void EmitMesh(Mesh& out) const;
+  // then the floor triangles, then the painting canvases. Floors and paintings
+  // each occupy a contiguous index range the renderer binds a material to.
+  //
+  // `painting_uvs` supplies each painting's rectangle in the atlas, in painting
+  // order. When it is empty (or shorter than the number of spots) the paintings
+  // are still built, so the frames are visible, but the canvases are omitted
+  // rather than sampled from nowhere.
+  struct PaintingUv {
+    float u0 = 0.0f;
+    float v0 = 0.0f;
+    float u1 = 0.0f;
+    float v1 = 0.0f;
+    float aspect = 1.0f;
+  };
+  void EmitMesh(Mesh& out, const std::vector<PaintingUv>& painting_uvs) const;
 
   const CollisionWorld& collision() const { return collision_; }
   const MuseumStats& stats() const { return stats_; }
   const std::vector<SpotLight>& lights() const { return lights_; }
+  const std::vector<PaintingSpot>& painting_spots() const {
+    return painting_spots_;
+  }
 
  private:
   void AddSegment(const SegmentBox& box);

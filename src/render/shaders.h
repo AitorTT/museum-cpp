@@ -58,12 +58,20 @@ struct Uniforms {
 @group(0) @binding(2) var floor_sampler : sampler;
 @group(0) @binding(3) var shadow_atlas : texture_depth_2d;
 @group(0) @binding(4) var shadow_sampler : sampler_comparison;
+@group(0) @binding(5) var painting_atlas : texture_2d<f32>;
+
+// Material ids, matching museum.h. 0 wall/ceiling, 1 floor, 2 painting canvas,
+// 3 painting frame.
+const MAT_WALL : f32 = 0.0;
+const MAT_FLOOR : f32 = 1.0;
+const MAT_PAINTING : f32 = 2.0;
+const MAT_FRAME : f32 = 3.0;
 
 struct VertexIn {
   @location(0) position : vec3<f32>,
   @location(1) normal : vec3<f32>,
   @location(2) uv : vec2<f32>,
-  @location(3) is_floor : f32,
+  @location(3) material : f32,
 };
 
 struct VertexOut {
@@ -71,7 +79,7 @@ struct VertexOut {
   @location(0) normal : vec3<f32>,
   @location(1) world_pos : vec3<f32>,
   @location(2) uv : vec2<f32>,
-  @location(3) is_floor : f32,
+  @location(3) material : f32,
 };
 
 @vertex
@@ -81,7 +89,7 @@ fn vs_main(in : VertexIn) -> VertexOut {
   out.normal = in.normal;
   out.world_pos = in.position;
   out.uv = in.uv;
-  out.is_floor = in.is_floor;
+  out.material = in.material;
   return out;
 }
 
@@ -155,16 +163,20 @@ fn shadow_term(slot : i32, atlas_rect : vec4<f32>, world_pos : vec3<f32>) -> f32
 
 @fragment
 fn fs_main(in : VertexOut) -> @location(0) vec4<f32> {
-  let is_floor = in.is_floor > 0.5;
+  let is_floor = abs(in.material - MAT_FLOOR) < 0.5;
 
   // Sample unconditionally, then select: WGSL requires textureSample to be in
-  // uniform control flow, and `is_floor` varies per pixel (it is a vertex
+  // uniform control flow, and the material varies per pixel (it is a vertex
   // attribute), so an `if` around the sample is a compile error.
   let tex = textureSample(floor_tex, floor_sampler, in.uv).rgb;
   // The source brick texture is very dark, so it is boosted; the JS museum
   // multiplies it by 2.2 for the same reason.
   let floor_albedo = min(tex * 2.2, vec3<f32>(1.0));
-  let albedo = select(u.wall_color.rgb, floor_albedo, is_floor);
+  let is_frame = abs(in.material - MAT_FRAME) < 0.5;
+  // FRAME_COLOR_LINEAR from the JS config, and lit like any other surface.
+  let frame_albedo = vec3<f32>(0.2, 0.2, 0.2);
+  var albedo = select(u.wall_color.rgb, floor_albedo, is_floor);
+  albedo = select(albedo, frame_albedo, is_frame);
 
   let n = normalize(in.normal);
   let to_frag = in.world_pos - u.camera_pos.xyz;
@@ -238,6 +250,14 @@ fn fs_main(in : VertexOut) -> @location(0) vec4<f32> {
   // Distance haze toward the horizon colour, so far rooms read as far.
   let fog_amount = 1.0 - exp(-distance * u.fog.a);
   var color = mix(total, u.fog.rgb, clamp(fog_amount, 0.0, 1.0));
+
+  // A painting canvas is unshaded: the JS museum draws it with a basic material
+  // so the artwork reads at its own brightness rather than being dimmed by
+  // wherever its wall happens to sit relative to a fixture. The atlas is sRGB,
+  // so the sample arrives linear, matching the rest of the pipeline.
+  let is_painting = abs(in.material - MAT_PAINTING) < 0.5;
+  let canvas = textureSample(painting_atlas, floor_sampler, in.uv).rgb;
+  color = select(color, canvas, is_painting);
 
   color = color * u.tonemap.x;
   if (u.tonemap.y > 0.5) {

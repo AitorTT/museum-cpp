@@ -73,6 +73,32 @@ extern "C" EMSCRIPTEN_KEEPALIVE void museumSetPose(float x, float y, float z,
   g_engine.mutable_player().SetPose(x, y, z, yaw, pitch);
 }
 
+// Painting spot count and coordinates, so the screenshot pass can aim at a real
+// painting instead of guessing which wall a room was assigned.
+extern "C" EMSCRIPTEN_KEEPALIVE int museumPaintingCount() {
+  return static_cast<int>(g_engine.museum().painting_spots().size());
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE float museumPaintingX(int i) {
+  const auto& spots = g_engine.museum().painting_spots();
+  return (i >= 0 && i < static_cast<int>(spots.size())) ? spots[i].x : 0.0f;
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE float museumPaintingY(int i) {
+  const auto& spots = g_engine.museum().painting_spots();
+  return (i >= 0 && i < static_cast<int>(spots.size())) ? spots[i].y : 0.0f;
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE float museumPaintingZ(int i) {
+  const auto& spots = g_engine.museum().painting_spots();
+  return (i >= 0 && i < static_cast<int>(spots.size())) ? spots[i].z : 0.0f;
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE float museumPaintingRy(int i) {
+  const auto& spots = g_engine.museum().painting_spots();
+  return (i >= 0 && i < static_cast<int>(spots.size())) ? spots[i].ry : 0.0f;
+}
+
 #else
 
 int main() {

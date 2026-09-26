@@ -32,7 +32,7 @@ void AppendBox(const SegmentBox& box, Mesh& mesh) {
   // Floors get the floor material and per-metre texture tiling; walls get a
   // flat colour. Ceilings behave as walls.
   const bool is_floor_box = box.kind == SegmentKind::kFloor;
-  const float floor_flag = is_floor_box ? 1.0f : 0.0f;
+  const float material = is_floor_box ? kMaterialFloor : kMaterialWall;
   const float uv_scale = is_floor_box ? 2.0f : 1.0f;
 
   // Six faces, each with its own normal and a 0..1 UV square.
@@ -87,7 +87,7 @@ void AppendBox(const SegmentBox& box, Mesh& mesh) {
       vertex.nz = face.nz;
       vertex.u = uvs[i][0] * u_extent * u_scale;
       vertex.v = uvs[i][1] * v_extent * u_scale;
-      vertex.is_floor = floor_flag;
+      vertex.material = material;
       mesh.vertices.push_back(vertex);
     }
 
@@ -98,6 +98,103 @@ void AppendBox(const SegmentBox& box, Mesh& mesh) {
     mesh.indices.push_back(base + 2);
     mesh.indices.push_back(base + 3);
   }
+}
+
+// Appends one axis-aligned quad in the painting's local frame, rotated by `ry`
+// and translated to the spot. Winding faces local +Z, which Painting.ts
+// documents as the direction that faces into the room.
+void AppendLocalQuad(const PaintingSpot& spot, float local_x0, float local_y0,
+                     float local_x1, float local_y1, float local_z,
+                     const float uvs[4][2], float material, float nx, float ny,
+                     float nz, Mesh& mesh) {
+  const float c = std::cos(spot.ry);
+  const float s = std::sin(spot.ry);
+
+  // Rotate about Y: (x, z) -> (x*c + z*s, -x*s + z*c), matching the engine's
+  // yaw convention so a painting faces the same way the JS museum's does.
+  const auto place = [&](float lx, float ly) {
+    const float rx = lx * c + local_z * s;
+    const float rz = -lx * s + local_z * c;
+    return math::Vec3{spot.x + rx, spot.y + ly, spot.z + rz};
+  };
+
+  const math::Vec3 corners[4] = {
+      place(local_x0, local_y0), place(local_x1, local_y0),
+      place(local_x1, local_y1), place(local_x0, local_y1)};
+
+  // The normal rotates with the quad.
+  const float rnx = nx * c + nz * s;
+  const float rnz = -nx * s + nz * c;
+
+  const std::uint32_t base = static_cast<std::uint32_t>(mesh.vertices.size());
+  for (int i = 0; i < 4; ++i) {
+    Vertex vertex;
+    vertex.px = corners[i].x;
+    vertex.py = corners[i].y;
+    vertex.pz = corners[i].z;
+    vertex.nx = rnx;
+    vertex.ny = ny;
+    vertex.nz = rnz;
+    vertex.u = uvs[i][0];
+    vertex.v = uvs[i][1];
+    vertex.material = material;
+    mesh.vertices.push_back(vertex);
+  }
+  mesh.indices.push_back(base + 0);
+  mesh.indices.push_back(base + 1);
+  mesh.indices.push_back(base + 2);
+  mesh.indices.push_back(base + 0);
+  mesh.indices.push_back(base + 2);
+  mesh.indices.push_back(base + 3);
+}
+
+// One painting: four frame bars plus the canvas, from Painting.ts. The frame is
+// a lit surface in the wall material (a dark grey box), the canvas an unshaded
+// atlas sample floating just proud of it.
+void AppendPainting(const PaintingSpot& spot, const Museum::PaintingUv& uv,
+                    Mesh& mesh) {
+  const float s = museum::config::kPaintingScale;
+  const float fp = 0.05f;  // FRAME_PADDING
+  const float fd = 0.08f;  // FRAME_DEPTH
+  const float aspect = uv.aspect > 0.0f ? uv.aspect : 1.0f;
+
+  const float fw = (aspect + fp * 2.0f) * s;
+  const float fh = (1.0f + fp * 2.0f) * s;
+  const float bar_t = fp * s;
+  const float bar_d = fd * s;
+  const float half_w = fw * 0.5f - bar_t * 0.5f;
+  const float half_h = fh * 0.5f - bar_t * 0.5f;
+
+  // Frame bars sit centred on the mounting plane; the canvas is pushed a
+  // little into the room so it is never z-fighting with the frame's front face.
+  const float frame_z = 0.0f;
+  const float canvas_z = 0.0625f * s;
+
+  const float flat[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+
+  // Top and bottom bars (span the full width), then left and right (full height).
+  AppendLocalQuad(spot, -fw * 0.5f, half_h - bar_t * 0.5f, fw * 0.5f,
+                  half_h + bar_t * 0.5f, frame_z, flat, kMaterialFrame, 0, 0, 1,
+                  mesh);
+  AppendLocalQuad(spot, -fw * 0.5f, -half_h - bar_t * 0.5f, fw * 0.5f,
+                  -half_h + bar_t * 0.5f, frame_z, flat, kMaterialFrame, 0, 0, 1,
+                  mesh);
+  AppendLocalQuad(spot, -half_w - bar_t * 0.5f, -fh * 0.5f,
+                  -half_w + bar_t * 0.5f, fh * 0.5f, frame_z, flat,
+                  kMaterialFrame, 0, 0, 1, mesh);
+  AppendLocalQuad(spot, half_w - bar_t * 0.5f, -fh * 0.5f,
+                  half_w + bar_t * 0.5f, fh * 0.5f, frame_z, flat,
+                  kMaterialFrame, 0, 0, 1, mesh);
+
+  // The canvas: aspect*s wide and s tall, UVs straight into its atlas cell.
+  const float cw = aspect * s;
+  const float ch = 1.0f * s;
+  const float canvas_uvs[4][2] = {{uv.u0, uv.v1},
+                                  {uv.u1, uv.v1},
+                                  {uv.u1, uv.v0},
+                                  {uv.u0, uv.v0}};
+  AppendLocalQuad(spot, -cw * 0.5f, -ch * 0.5f, cw * 0.5f, ch * 0.5f,
+                  canvas_z, canvas_uvs, kMaterialPainting, 0, 0, 1, mesh);
 }
 
 }  // namespace
@@ -213,7 +310,7 @@ void Museum::AddCornerPatches() {
   (void)kGrid;
 }
 
-void Museum::EmitMesh(Mesh& out) const {
+void Museum::EmitMesh(Mesh& out, const std::vector<PaintingUv>& painting_uvs) const {
   // Walls and ceilings first.
   const std::uint32_t wall_begin = static_cast<std::uint32_t>(out.indices.size());
   for (const SegmentBox& box : segments_) {
@@ -234,6 +331,18 @@ void Museum::EmitMesh(Mesh& out) const {
   }
   out.floor_index_count =
       static_cast<std::uint32_t>(out.indices.size()) - out.floor_index_begin;
+
+  // Finally the paintings: a dark frame plus an unshaded canvas. The JS museum
+  // assigns paintings to the first `painting_uvs.size()` eligible spots, in
+  // room order, and leaves the rest bare -- the same rule is in RoomBuilder.
+  out.painting_index_begin = static_cast<std::uint32_t>(out.indices.size());
+  const std::size_t painting_count =
+      std::min(painting_spots_.size(), painting_uvs.size());
+  for (std::size_t i = 0; i < painting_count; ++i) {
+    AppendPainting(painting_spots_[i], painting_uvs[i], out);
+  }
+  out.painting_index_count =
+      static_cast<std::uint32_t>(out.indices.size()) - out.painting_index_begin;
 }
 
 }  // namespace museum::world
