@@ -33,9 +33,16 @@ enum class Key {
 inline constexpr std::uint32_t kKeyCount = static_cast<std::uint32_t>(Key::kCount);
 
 struct InputState {
-  // -1..1 per axis, already normalized for the player controller.
+  // -1..1 per axis, already normalized for the player controller. Written by
+  // the keyboard (via UpdateMoveAxes) or, on touch devices, by the on-screen
+  // stick straight through SetStick.
   float move_forward = 0.0f;
   float move_strafe = 0.0f;
+
+  // True while an analog source owns the movement axes. Without it, a key
+  // release would call UpdateMoveAxes, see every key up, and zero the stick the
+  // user is still holding.
+  bool stick_active = false;
 
   // Accumulated since the last frame, in pixels. Drained by Player::Update.
   float look_yaw = 0.0f;
@@ -116,6 +123,14 @@ class Window {
   void ApplyLookDelta(float dx, float dy);
   void SetPointerLocked(bool locked);
   void SetKey(Key key, bool down);
+
+  // Analog movement from an on-screen stick. forward/strafe are -1..1; the
+  // caller is expected to pass small values near the centre rather than a
+  // snapped deadzone, so the player can creep.
+  void SetStick(float forward, float strafe);
+
+  // Releases the stick and hands the axes back to the keyboard.
+  void ClearStick();
 #endif
 
  private:

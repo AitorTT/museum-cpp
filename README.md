@@ -74,6 +74,11 @@ python -m http.server 8000 --directory build-web
 Open <http://localhost:8000/museum.html>. Click to enter, WASD to move, mouse to
 look. You should see a world-locked grid that streams past as you walk.
 
+On a touch device (phone or tablet) the page detects a coarse pointer and swaps
+the controls: tap to enter, a left stick to move, and a drag anywhere on the
+right half to look. Pointer lock does not exist for touch, so that path is
+skipped rather than requested-and-rejected.
+
 ## Build (native)
 
 ```sh
@@ -115,7 +120,7 @@ assets/
 third_party/
   stb_image.h         vendored single-header image decoder
 web/
-  shell.html          page, canvas, pointer lock, input bridge
+  shell.html          page, canvas, pointer lock, touch controls, input bridge
 batch2_check.mjs      Playwright check: counts, spawn, eye height, collision
 capture_views.mjs     Playwright: screenshots from inside real rooms
 ```

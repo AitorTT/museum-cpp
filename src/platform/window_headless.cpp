@@ -120,7 +120,27 @@ void Window::SetKey(Key key, bool down) {
   UpdateMoveAxes();
 }
 
+void Window::SetStick(float forward, float strafe) {
+  input_.stick_active = true;
+  input_.move_forward = forward;
+  input_.move_strafe = strafe;
+}
+
+void Window::ClearStick() {
+  input_.stick_active = false;
+  input_.move_forward = 0.0f;
+  input_.move_strafe = 0.0f;
+  // A key may have been pressed while the stick was held, so re-derive from
+  // the key state rather than assuming the axes are now centre.
+  UpdateMoveAxes();
+}
+
 void Window::UpdateMoveAxes() {
+  // An on-screen stick owns the axes while it is being held. Letting the key
+  // path run here would zero them, because the keys it checks are all up.
+  if (input_.stick_active) {
+    return;
+  }
   const bool w = input_.KeyDown(Key::kW) || input_.KeyDown(Key::kUp);
   const bool s = input_.KeyDown(Key::kS) || input_.KeyDown(Key::kDown);
   const bool d = input_.KeyDown(Key::kD) || input_.KeyDown(Key::kRight);
@@ -161,6 +181,19 @@ EMSCRIPTEN_KEEPALIVE void museumApplyLook(float dx, float dy) {
 EMSCRIPTEN_KEEPALIVE void museumSetPointerLocked(int locked) {
   if (museum::platform::g_window != nullptr) {
     museum::platform::g_window->SetPointerLocked(locked != 0);
+  }
+}
+
+// Analog movement axes from the on-screen stick, -1..1. `active` distinguishes
+// "stick is held" from a genuine centre position, so releasing it hands control
+// back to the keyboard instead of pinning the player at a standstill.
+EMSCRIPTEN_KEEPALIVE void museumSetStick(int active, float forward, float strafe) {
+  if (museum::platform::g_window != nullptr) {
+    if (active != 0) {
+      museum::platform::g_window->SetStick(forward, strafe);
+    } else {
+      museum::platform::g_window->ClearStick();
+    }
   }
 }
 

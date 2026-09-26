@@ -10,7 +10,7 @@
     overflow: hidden; background: #23272f;
     font-family: system-ui, sans-serif; color: #c8d0dc;
   }
-  #canvas { display: block; width: 100vw; height: 100vh; outline: none; }
+  #canvas { display: block; width: 100vw; height: 100vh; outline: none; touch-action: none; }
 
   #overlay {
     position: fixed; inset: 0; display: flex;
@@ -21,15 +21,44 @@
   #overlay-inner { text-align: center; }
   #overlay h1 { font-weight: 600; letter-spacing: 0.08em; font-size: 22px; }
   #overlay p { font-size: 13px; opacity: 0.7; }
+
+  /* Touch controls. Hidden entirely on pointer devices, so the desktop build
+     is unchanged. Both sticks are drawn from the same primitives. */
+  #touch { display: none; }
+  #touch.on { display: block; }
+
+  .stick {
+    position: fixed; width: 132px; height: 132px; border-radius: 50%;
+    background: rgba(200, 208, 220, 0.10);
+    border: 1.5px solid rgba(200, 208, 220, 0.28);
+    touch-action: none; z-index: 10;
+  }
+  .stick .knob {
+    position: absolute; width: 58px; height: 58px; border-radius: 50%;
+    left: 37px; top: 37px;
+    background: rgba(200, 208, 220, 0.34);
+    border: 1.5px solid rgba(200, 208, 220, 0.55);
+  }
+  #stick-move { left: 26px; bottom: 26px; }
+  /* The look pad is a large invisible drag area over the right of the screen. */
+  #look-pad {
+    position: fixed; right: 0; top: 0; width: 55%; height: 100%;
+    touch-action: none; z-index: 9;
+  }
 </style>
 </head>
 <body>
 <canvas id="canvas" tabindex="-1"></canvas>
 
+<div id="touch">
+  <div id="look-pad"></div>
+  <div class="stick" id="stick-move"><div class="knob" id="knob-move"></div></div>
+</div>
+
 <div id="overlay">
   <div id="overlay-inner">
     <h1>MUSEUM</h1>
-    <p>Click to enter &mdash; WASD to move, mouse to look</p>
+    <p id="hint">Click to enter &mdash; WASD to move, mouse to look</p>
   </div>
 </div>
 
@@ -45,6 +74,13 @@
 
   var canvas = document.getElementById('canvas');
   var overlay = document.getElementById('overlay');
+  var hint = document.getElementById('hint');
+
+  // A coarse pointer with no hover is a touch device: phones and tablets. This
+  // drives both the controls and the overlay wording, so a desktop browser with
+  // a touchscreen still gets the pointer-lock path it expects.
+  var isTouch = window.matchMedia &&
+      window.matchMedia('(pointer: coarse)').matches;
 
   // The C++ platform layer installs these; they defer to the exported symbols.
   Module.museumApplyLook = function (dx, dy) {
@@ -53,6 +89,13 @@
   Module.museumSetPointerLocked = function (locked) {
     if (Module._museumSetPointerLocked) {
       Module._museumSetPointerLocked(locked ? 1 : 0);
+    }
+  };
+  // Analog move axes, -1..1, with an explicit active flag so the engine can
+  // tell a held-but-centred stick from a released one.
+  Module.museumSetStick = function (active, forward, strafe) {
+    if (Module._museumSetStick) {
+      Module._museumSetStick(active ? 1 : 0, forward, strafe);
     }
   };
 
@@ -67,17 +110,32 @@
     }
   }
 
-  overlay.addEventListener('click', function () {
+  function enterMuseum() {
     overlay.classList.add('hidden');
+    if (isTouch) {
+      // Pointer lock does not exist for touch, and requesting it would throw.
+      // The touch controls take over looking instead.
+      document.getElementById('touch').classList.add('on');
+      // The engine starts locked-less on touch; nothing else gates movement.
+      Module.museumSetPointerLocked(true);
+      return;
+    }
     // Ignore a rejected lock: the engine still needs to run, and some
     // embedding contexts never grant it.
     var lock = canvas.requestPointerLock();
     if (lock && typeof lock.catch === 'function') {
       lock.catch(function () {});
     }
+  }
+
+  overlay.addEventListener('click', enterMuseum);
+  overlay.addEventListener('touchend', function (e) {
+    e.preventDefault();
+    enterMuseum();
   });
 
   document.addEventListener('pointerlockchange', function () {
+    if (isTouch) return;
     Module.museumSetPointerLocked(!!document.pointerLockElement);
     if (!document.pointerLockElement) {
       overlay.classList.remove('hidden');
@@ -85,8 +143,129 @@
   });
 
   document.addEventListener('pointermove', function (e) {
+    if (isTouch) return;
     if (document.pointerLockElement) {
       Module.museumApplyLook(e.movementX || 0, e.movementY || 0);
+    }
+  });
+
+  if (isTouch) {
+    hint.textContent = 'Tap to enter \u2014 left stick to move, drag the right side to look';
+  }
+
+  // --- Touch controls ------------------------------------------------------
+
+  // Screen pixels per pixel of look delta. The engine's sensitivity is tuned
+  // for mouse movement, so this is calibrated down to feel like a drag rather
+  // than a flick on a high-DPI phone.
+  var kLookScale = 1.6;
+
+  // Left stick: track one touch by identifier so a second finger on the look
+  // pad never steals it.
+  var moveStick = document.getElementById('stick-move');
+  var moveKnob = document.getElementById('knob-move');
+  var moveTouchId = null;
+  var stickRadius = 66;  // half the 132px pad; matches the CSS
+
+  function setKnob(el, dx, dy) {
+    el.style.transform = 'translate(' + dx + 'px,' + dy + 'px)';
+  }
+
+  function stickOrigin() {
+    var r = moveStick.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  }
+
+  function updateStick(t) {
+    var o = stickOrigin();
+    var dx = t.clientX - o.x;
+    var dy = t.clientY - o.y;
+    var dist = Math.sqrt(dx * dx + dy * dy);
+    // Clamp the knob to the ring, but keep the full deflection when the finger
+    // travels past it -- the direction still means something out there.
+    var clamp = dist > stickRadius ? stickRadius / dist : 1;
+    setKnob(moveKnob, dx * clamp, dy * clamp);
+
+    // Normalise by the radius, then apply a small deadzone so a resting thumb
+    // does not drift the player.
+    var nx = (dx / stickRadius);
+    var ny = (dy / stickRadius);
+    var mag = Math.min(1, Math.sqrt(nx * nx + ny * ny));
+    if (mag < 0.12) {
+      Module.museumSetStick(false, 0, 0);
+      return;
+    }
+    // Screen down (+y) is backwards, so forward is -ny. The engine normalises
+    // the vector itself, so passing the magnitude here is safe.
+    Module.museumSetStick(true, -ny, nx);
+  }
+
+  function endStick() {
+    moveTouchId = null;
+    setKnob(moveKnob, 0, 0);
+    Module.museumSetStick(false, 0, 0);
+  }
+
+  moveStick.addEventListener('touchstart', function (e) {
+    e.preventDefault();
+    if (moveTouchId !== null) return;
+    var t = e.changedTouches[0];
+    moveTouchId = t.identifier;
+    updateStick(t);
+  }, { passive: false });
+
+  // Look pad: drag anywhere on the right side. Deltas are per-move-event, so
+  // there is nothing to reset when the finger lifts.
+  var lookPad = document.getElementById('look-pad');
+  var lookTouchId = null;
+  var lookLast = null;
+
+  lookPad.addEventListener('touchstart', function (e) {
+    e.preventDefault();
+    if (lookTouchId !== null) return;
+    var t = e.changedTouches[0];
+    lookTouchId = t.identifier;
+    lookLast = { x: t.clientX, y: t.clientY };
+  }, { passive: false });
+
+  document.addEventListener('touchmove', function (e) {
+    var i;
+    for (i = 0; i < e.changedTouches.length; ++i) {
+      var t = e.changedTouches[i];
+      if (t.identifier === moveTouchId) {
+        e.preventDefault();
+        updateStick(t);
+      } else if (t.identifier === lookTouchId) {
+        e.preventDefault();
+        var dx = (t.clientX - lookLast.x) * kLookScale;
+        var dy = (t.clientY - lookLast.y) * kLookScale;
+        lookLast = { x: t.clientX, y: t.clientY };
+        Module.museumApplyLook(dx, dy);
+      }
+    }
+  }, { passive: false });
+
+  document.addEventListener('touchend', function (e) {
+    var i;
+    for (i = 0; i < e.changedTouches.length; ++i) {
+      var t = e.changedTouches[i];
+      if (t.identifier === moveTouchId) endStick();
+      if (t.identifier === lookTouchId) {
+        lookTouchId = null;
+        lookLast = null;
+      }
+    }
+  });
+
+  document.addEventListener('touchcancel', function (e) {
+    var i;
+    for (i = 0; i < e.changedTouches.length; ++i) {
+      var t = e.changedTouches[i];
+      if (t.identifier === moveTouchId) endStick();
+      if (t.identifier === lookTouchId) {
+        lookTouchId = null;
+        lookLast = null;
+      }
     }
   });
 
