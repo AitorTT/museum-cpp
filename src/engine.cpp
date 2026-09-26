@@ -59,15 +59,18 @@ void Engine::Frame() {
   // A held look stick is a rotation rate, but the look path is expressed in
   // pixel deltas (the same units a mouse reports), so convert using dt. At full
   // deflection this turns at kLookStickSpeed radians per second.
+  //
+  // The sign is worth spelling out, because it is easy to get backwards twice.
+  // ApplyLook does `yaw_ -= dx`, so the value written here is subtracted, not
+  // added. The stick's x is screen-right positive, and a right push must turn
+  // right, which is yaw decreasing. yaw_ -= look_yaw, so for yaw to fall on a
+  // positive x, look_yaw must be positive: hence `+= x`, not `+= -x`.
   platform::InputState& input = window_.mutable_input();
   if (input.look_stick_active) {
     const float pixels = player::kLookStickSpeed * dt;
-    // Both axes are already in the mouse's convention: x is screen-right
-    // positive and y is screen-down positive, which is what ApplyLook expects
-    // (it subtracts both, so positive dx/dy turn right and look down). The
-    // stick supplies x that way and negates y on the way out, so no further
-    // sign change belongs here.
     input.look_yaw += input.look_stick_x * pixels;
+    // y is screen-up positive in the stick but ApplyLook wants screen-down
+    // positive, and it subtracts, so this one does negate.
     input.look_pitch += -input.look_stick_y * pixels;
   }
 
