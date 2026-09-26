@@ -18,6 +18,7 @@ This is the performance-focused successor to the Godot museum and the Three.js
 | 4 | Ceiling spot lighting (43 lights, per-pixel) | done |
 | 5 | Real shadow mapping (atlas of per-light depth tiles) | done |
 | 6 | Paintings: 27 canvases in one atlas, framed on wall spots | done |
+| 7 | Sculpture: glTF scan placed in the spawn room, its own maps | done |
 
 ### Batch 1 native build blocker
 
@@ -110,6 +111,8 @@ src/
   render/
     shaders.h         WGSL for the world pass and the sky dome
     texture.{h,cpp}   stb_image decode + mip generation + upload
+    painting_atlas.{h,cpp}  packs the 27 canvases into one texture
+    gltf.{h,cpp}      minimal glTF 2.0 (.glb) reader for the sculpture
     renderer.{h,cpp}  device bring-up, surface, depth, frame
   world/
     config.h          room/door/window dimensions, FloorTopY
@@ -119,12 +122,10 @@ src/
     museum.{h,cpp}    builds every room, corner patches, and the merged mesh
     sky.{h,cpp}       the gradient dome
     shadows.{h,cpp}   light-space matrices and shadow-atlas tile rectangles
-  render/
-    painting_atlas.{h,cpp}  packs the 27 canvases into one texture
 assets/
   textures/floor_wall1.jpg   the floor brick texture
   paintings/painting_01..27.jpg  the canvases, numbered in assignment order
-  models/Untitled.glb        the sculpture (Batch 7, not yet drawn)
+  models/Untitled.glb        the sculpture (base colour + normal map embedded)
 third_party/
   stb_image.h         vendored single-header image decoder
 web/
@@ -203,6 +204,43 @@ There is one material id per surface in the vertex (see `kMaterial*` in
 canvases are **unshaded**. Unshaded matters: the JS museum draws canvases with a
 basic material, so the artwork reads at its own brightness instead of being
 dimmed by wherever its wall happens to sit relative to a fixture.
+
+## Sculpture
+
+`assets/models/Untitled.glb` is a photogrammetry scan (`WhiteOgreTihu_Textured`)
+that the JS museum never used, so there was no reference placement, scale or
+facing to port: its position here is a design choice. It stands 2 m tall at the
+centre of the spawn room, facing the spawn point, with a box collider so the
+player cannot walk through it.
+
+Two pieces make it work:
+
+- `render/gltf.{h,cpp}` is a minimal glTF 2.0 `.glb` reader, written by hand
+  rather than pulling in cgltf or tinygltf. It parses only the subset this one
+  file uses: the JSON and BIN chunks, POSITION/NORMAL/TEXCOORD_0 and the index
+  accessor, the node transform (TRS, composed `T * R * S`), and the two embedded
+  JPEGs. No sparse accessors, animation, skinning or Draco. The JSON chunk sits
+  inside the GLB and is therefore not NUL-terminated, so every number is copied
+  into a bounded buffer before `strtod` sees it.
+- `Museum::EmitMesh` stamps the supplied vertices with the sculpture material and
+  appends them after the paintings, so they ride the same single draw call.
+
+The sculpture is **lit** (unlike the canvases) from its own base colour and
+tangent-space normal map. The scan carries no `TANGENT` attribute, so the shader
+derives the tangent frame from the screen-space derivatives of the world position
+and UV — the standard fallback, correct everywhere except a perfectly edge-on
+surface. The base colour map is sampled as sRGB, the normal map as linear data.
+
+The two shader mistakes this batch repeated, both of which black the whole scene
+rather than just the sculpture, are worth remembering:
+
+1. `textureSample` must be in uniform control flow. Sampling the normal map
+   inside `if (is_sculpture)` is a WGSL compile error, and a shader that fails to
+   compile renders nothing at all — the symptom is a black screen.
+2. The JSON reader must be restartable. Seeking a named member leaves the scanner
+   inside the document, and a later member can sit earlier in the file (materials
+   precede meshes; textures follow them), so each top-level lookup starts from a
+   fresh copy of the document.
 
 ## Lighting
 

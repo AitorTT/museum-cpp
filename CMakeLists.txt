@@ -22,6 +22,8 @@ set(MUSEUM_SOURCES
   src/player/player.cpp
   src/render/renderer.cpp
   src/render/shaders.h
+  src/render/gltf.cpp
+  src/render/gltf.h
   src/render/painting_atlas.cpp
   src/render/painting_atlas.h
   src/render/texture.cpp

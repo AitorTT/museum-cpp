@@ -69,4 +69,9 @@ async function shotPainting(index, name) {
 await shotPainting(3, "landscape");
 await shotPainting(14, "portrait");
 
+// The sculpture stands at the centre of the spawn room, (0, -10), sized to 2m.
+// The spawn room spans x[-5,5], z[-15,-5], so the camera sits inside it and
+// looks across at the figure rather than through a wall.
+await shot("sculpture", 0.0, Y, -6.0, 0.0, 0.05);
+
 await browser.close();

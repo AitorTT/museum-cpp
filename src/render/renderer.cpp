@@ -104,7 +104,9 @@ Renderer::~Renderer() {
 bool Renderer::Initialize(platform::Window* window, const world::Mesh& museum_mesh,
                           const world::SkyMesh& sky_mesh,
                           const std::vector<world::SpotLight>& lights,
-                          const char* assets_dir, const Image& painting_atlas) {
+                          const char* assets_dir, const Image& painting_atlas,
+                          const Image& sculpture_color,
+                          const Image& sculpture_normal) {
   window_ = window;
   width_ = window->width();
   height_ = window->height();
@@ -195,6 +197,23 @@ bool Renderer::Initialize(platform::Window* window, const world::Mesh& museum_me
                                                /*srgb=*/true, /*repeat=*/false);
     if (painting_texture_) {
       painting_view_ = painting_texture_.CreateView();
+    }
+  }
+  // The sculpture's maps: base colour is sRGB, the normal map must not be (it is
+  // a direction, not a colour). The scan's UVs run 0..1 and its sampler clamps,
+  // matching the glTF sampler it was authored with.
+  if (!sculpture_color.empty()) {
+    sculpture_texture_ = CreateTextureFromImage(
+        device_, queue_, sculpture_color, /*srgb=*/true, /*repeat=*/false);
+    if (sculpture_texture_) {
+      sculpture_view_ = sculpture_texture_.CreateView();
+    }
+  }
+  if (!sculpture_normal.empty()) {
+    sculpture_normal_texture_ = CreateTextureFromImage(
+        device_, queue_, sculpture_normal, /*srgb=*/false, /*repeat=*/false);
+    if (sculpture_normal_texture_) {
+      sculpture_normal_view_ = sculpture_normal_texture_.CreateView();
     }
   }
   if (kShadowsEnabled) {
@@ -342,8 +361,9 @@ void Renderer::BuildScenePipeline() {
   wgpu::ShaderModule module = device_.CreateShaderModule(&module_desc);
 
   // Scene bindings: uniforms, the floor texture and its sampler, the shadow
-  // atlas and its comparison sampler, then the paintings atlas.
-  wgpu::BindGroupLayoutEntry entries[6] = {};
+  // atlas and its comparison sampler, the paintings atlas, then the sculpture's
+  // base colour and normal maps.
+  wgpu::BindGroupLayoutEntry entries[8] = {};
   entries[0].binding = 0;
   entries[0].visibility = wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment;
   entries[0].buffer.type = wgpu::BufferBindingType::Uniform;
@@ -366,9 +386,17 @@ void Renderer::BuildScenePipeline() {
   entries[5].visibility = wgpu::ShaderStage::Fragment;
   entries[5].texture.sampleType = wgpu::TextureSampleType::Float;
   entries[5].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+  entries[6].binding = 6;
+  entries[6].visibility = wgpu::ShaderStage::Fragment;
+  entries[6].texture.sampleType = wgpu::TextureSampleType::Float;
+  entries[6].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+  entries[7].binding = 7;
+  entries[7].visibility = wgpu::ShaderStage::Fragment;
+  entries[7].texture.sampleType = wgpu::TextureSampleType::Float;
+  entries[7].texture.viewDimension = wgpu::TextureViewDimension::e2D;
 
   wgpu::BindGroupLayoutDescriptor layout_desc{};
-  layout_desc.entryCount = 6;
+  layout_desc.entryCount = 8;
   layout_desc.entries = entries;
   wgpu::BindGroupLayout bind_group_layout = device_.CreateBindGroupLayout(&layout_desc);
 
@@ -430,7 +458,7 @@ void Renderer::BuildScenePipeline() {
   buffer_desc.size = sizeof(SceneUniforms);
   scene_uniforms_ = device_.CreateBuffer(&buffer_desc);
 
-  wgpu::BindGroupEntry bind_entries[6] = {};
+  wgpu::BindGroupEntry bind_entries[8] = {};
   bind_entries[0].binding = 0;
   bind_entries[0].buffer = scene_uniforms_;
   bind_entries[0].offset = 0;
@@ -445,10 +473,14 @@ void Renderer::BuildScenePipeline() {
   bind_entries[4].sampler = shadow_sampler_;
   bind_entries[5].binding = 5;
   bind_entries[5].textureView = painting_view_;
+  bind_entries[6].binding = 6;
+  bind_entries[6].textureView = sculpture_view_;
+  bind_entries[7].binding = 7;
+  bind_entries[7].textureView = sculpture_normal_view_;
 
   wgpu::BindGroupDescriptor bind_group_desc{};
   bind_group_desc.layout = bind_group_layout;
-  bind_group_desc.entryCount = 6;
+  bind_group_desc.entryCount = 8;
   bind_group_desc.entries = bind_entries;
   scene_bind_group_ = device_.CreateBindGroup(&bind_group_desc);
 }

@@ -37,7 +37,8 @@ class Renderer {
   bool Initialize(platform::Window* window, const world::Mesh& museum_mesh,
                   const world::SkyMesh& sky_mesh,
                   const std::vector<world::SpotLight>& lights,
-                  const char* assets_dir, const Image& painting_atlas);
+                  const char* assets_dir, const Image& painting_atlas,
+                  const Image& sculpture_color, const Image& sculpture_normal);
 
   void Resize(std::uint32_t width, std::uint32_t height);
   void RenderFrame(const player::ViewMatrices& matrices);
@@ -109,6 +110,10 @@ class Renderer {
   wgpu::Sampler shadow_sampler_;
   wgpu::Texture painting_texture_;
   wgpu::TextureView painting_view_;
+  wgpu::Texture sculpture_texture_;
+  wgpu::TextureView sculpture_view_;
+  wgpu::Texture sculpture_normal_texture_;
+  wgpu::TextureView sculpture_normal_view_;
 
   wgpu::Texture depth_texture_;
   wgpu::TextureView depth_view_;

@@ -310,7 +310,8 @@ void Museum::AddCornerPatches() {
   (void)kGrid;
 }
 
-void Museum::EmitMesh(Mesh& out, const std::vector<PaintingUv>& painting_uvs) const {
+void Museum::EmitMesh(Mesh& out, const std::vector<PaintingUv>& painting_uvs,
+                      const SculptureMesh& sculpture) {
   // Walls and ceilings first.
   const std::uint32_t wall_begin = static_cast<std::uint32_t>(out.indices.size());
   for (const SegmentBox& box : segments_) {
@@ -343,6 +344,34 @@ void Museum::EmitMesh(Mesh& out, const std::vector<PaintingUv>& painting_uvs) co
   }
   out.painting_index_count =
       static_cast<std::uint32_t>(out.indices.size()) - out.painting_index_begin;
+
+  // Then the sculpture, if there is one: a normal map and base colour of its
+  // own, lit like the museum. Its collider is registered here too, since the
+  // footprint only becomes known when the caller supplies the model.
+  out.sculpture_index_begin = static_cast<std::uint32_t>(out.indices.size());
+  if (!sculpture.vertices.empty() && !sculpture.indices.empty()) {
+    const std::uint32_t base =
+        static_cast<std::uint32_t>(out.vertices.size());
+    for (const Vertex& v : sculpture.vertices) {
+      Vertex stamped = v;
+      stamped.material = kMaterialSculpture;
+      out.vertices.push_back(stamped);
+    }
+    for (std::uint32_t index : sculpture.indices) {
+      out.indices.push_back(base + index);
+    }
+
+    if (sculpture.collider_sx > 0.0f && sculpture.collider_sy > 0.0f &&
+        sculpture.collider_sz > 0.0f) {
+      collision_.AddBox(sculpture.collider_cx, sculpture.collider_cy,
+                        sculpture.collider_cz, sculpture.collider_sx,
+                        sculpture.collider_sy, sculpture.collider_sz,
+                        /*is_floor=*/false);
+      stats_.colliders = static_cast<int>(collision_.boxes.size());
+    }
+  }
+  out.sculpture_index_count =
+      static_cast<std::uint32_t>(out.indices.size()) - out.sculpture_index_begin;
 }
 
 }  // namespace museum::world

@@ -59,13 +59,16 @@ struct Uniforms {
 @group(0) @binding(3) var shadow_atlas : texture_depth_2d;
 @group(0) @binding(4) var shadow_sampler : sampler_comparison;
 @group(0) @binding(5) var painting_atlas : texture_2d<f32>;
+@group(0) @binding(6) var sculpture_tex : texture_2d<f32>;
+@group(0) @binding(7) var sculpture_normal : texture_2d<f32>;
 
 // Material ids, matching museum.h. 0 wall/ceiling, 1 floor, 2 painting canvas,
-// 3 painting frame.
+// 3 painting frame, 4 sculpture.
 const MAT_WALL : f32 = 0.0;
 const MAT_FLOOR : f32 = 1.0;
 const MAT_PAINTING : f32 = 2.0;
 const MAT_FRAME : f32 = 3.0;
+const MAT_SCULPTURE : f32 = 4.0;
 
 struct VertexIn {
   @location(0) position : vec3<f32>,
@@ -164,6 +167,7 @@ fn shadow_term(slot : i32, atlas_rect : vec4<f32>, world_pos : vec3<f32>) -> f32
 @fragment
 fn fs_main(in : VertexOut) -> @location(0) vec4<f32> {
   let is_floor = abs(in.material - MAT_FLOOR) < 0.5;
+  let is_sculpture = abs(in.material - MAT_SCULPTURE) < 0.5;
 
   // Sample unconditionally, then select: WGSL requires textureSample to be in
   // uniform control flow, and the material varies per pixel (it is a vertex
@@ -175,10 +179,43 @@ fn fs_main(in : VertexOut) -> @location(0) vec4<f32> {
   let is_frame = abs(in.material - MAT_FRAME) < 0.5;
   // FRAME_COLOR_LINEAR from the JS config, and lit like any other surface.
   let frame_albedo = vec3<f32>(0.2, 0.2, 0.2);
+
+  // The sculpture's own albedo, straight from its base colour map. It is a
+  // photogrammetry scan, so the colour map already carries the ivory/bone look
+  // and needs no tint. The map is sRGB, so the sample arrives linear.
+  let sculpt_albedo = textureSample(sculpture_tex, floor_sampler, in.uv).rgb;
+
   var albedo = select(u.wall_color.rgb, floor_albedo, is_floor);
   albedo = select(albedo, frame_albedo, is_frame);
+  albedo = select(albedo, sculpt_albedo, is_sculpture);
 
-  let n = normalize(in.normal);
+  // The sculpture's own normal map, sampled unconditionally (textureSample must
+  // be in uniform control flow; the material is per-pixel), then only used for
+  // the sculpture. The frame is derived from the screen-space derivatives of the
+  // world position and UV -- the standard trick when a mesh carries no TANGENT
+  // attribute, which this scan does not. It is only correct on a surface that is
+  // not perfectly edge-on, which is all the museum ever sees of a statue.
+  let sculpt_nm = textureSample(sculpture_normal, floor_sampler, in.uv).xyz * 2.0 - 1.0;
+  var n = normalize(in.normal);
+  {
+    let dp1 = dpdx(in.world_pos);
+    let dp2 = dpdy(in.world_pos);
+    let duv1 = dpdx(in.uv);
+    let duv2 = dpdy(in.uv);
+    let det = duv1.x * duv2.y - duv2.x * duv1.y;
+    var tangent = normalize(dp1 * duv2.y - dp2 * duv1.y);
+    var bitangent = normalize(dp2 * duv1.x - dp1 * duv2.x);
+    // Degenerate UVs (det near zero) would blow the frame up; fall back to an
+    // arbitrary but valid basis and let the geometric normal carry the shading.
+    if (abs(det) < 1.0e-8) {
+      tangent = vec3<f32>(1.0, 0.0, 0.0);
+      bitangent = vec3<f32>(0.0, 0.0, 1.0);
+    }
+    let tbn = mat3x3<f32>(tangent, bitangent, n);
+    let perturbed = normalize(tbn * vec3<f32>(sculpt_nm.xy, max(sculpt_nm.z, 0.0)));
+    n = select(n, perturbed, is_sculpture);
+  }
+
   let to_frag = in.world_pos - u.camera_pos.xyz;
   let distance = length(to_frag);
 
