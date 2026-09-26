@@ -50,8 +50,7 @@ struct Uniforms {
   bounce : vec4<f32>,       // x = wall, y = floor, z = min, w = max
   ceil_glow : vec4<f32>,    // x = base, y = glow, z = sigma^2
   light_count : vec4<f32>,  // x = count, y = shadow tile size in texels
-  hover_rect : vec4<f32>,   // xy = atlas uv origin, zw = size (0 when none)
-  painting_glow : vec4<f32>,// x = enabled, y = strength
+  painting_glow : vec4<f32>,// x = enabled, y = strength, z = hovered index
   light_view_proj : array<mat4x4<f32>, 4>,
   lights : array<Light, 4>,
 };
@@ -77,6 +76,7 @@ struct VertexIn {
   @location(1) normal : vec3<f32>,
   @location(2) uv : vec2<f32>,
   @location(3) material : f32,
+  @location(4) painting_index : f32,
 };
 
 struct VertexOut {
@@ -85,6 +85,7 @@ struct VertexOut {
   @location(1) world_pos : vec3<f32>,
   @location(2) uv : vec2<f32>,
   @location(3) material : f32,
+  @location(4) painting_index : f32,
 };
 
 @vertex
@@ -95,6 +96,7 @@ fn vs_main(in : VertexIn) -> VertexOut {
   out.world_pos = in.position;
   out.uv = in.uv;
   out.material = in.material;
+  out.painting_index = in.painting_index;
   return out;
 }
 
@@ -179,8 +181,15 @@ fn fs_main(in : VertexOut) -> @location(0) vec4<f32> {
   // multiplies it by 2.2 for the same reason.
   let floor_albedo = min(tex * 2.2, vec3<f32>(1.0));
   let is_frame = abs(in.material - MAT_FRAME) < 0.5;
-  // FRAME_COLOR_LINEAR from the JS config, and lit like any other surface.
-  let frame_albedo = vec3<f32>(0.2, 0.2, 0.2);
+  // FRAME_COLOR_LINEAR from the JS config, and lit like any other surface. When
+  // the crosshair is on this painting the frame warms and brightens, which is
+  // the whole hover cue: the canvas itself is left untouched so the artwork
+  // still reads at its own brightness. The index never matches -1, so an
+  // unhovered frame (and every other surface) is unchanged.
+  var frame_albedo = vec3<f32>(0.2, 0.2, 0.2);
+  if (u.painting_glow.x > 0.5 && abs(in.painting_index - u.painting_glow.z) < 0.5) {
+    frame_albedo = frame_albedo + u.painting_glow.y * vec3<f32>(1.0, 0.82, 0.5);
+  }
 
   // The sculpture's own albedo, straight from its base colour map. It is a
   // photogrammetry scan, so the colour map already carries the ivory/bone look
@@ -293,25 +302,11 @@ fn fs_main(in : VertexOut) -> @location(0) vec4<f32> {
   // A painting canvas is unshaded: the JS museum draws it with a basic material
   // so the artwork reads at its own brightness rather than being dimmed by
   // wherever its wall happens to sit relative to a fixture. The atlas is sRGB,
-  // so the sample arrives linear, matching the rest of the pipeline.
+  // so the sample arrives linear, matching the rest of the pipeline. The hover
+  // cue lives on the frame, not here, so the canvas is never altered.
   let is_painting = abs(in.material - MAT_PAINTING) < 0.5;
   let canvas = textureSample(painting_atlas, floor_sampler, in.uv).rgb;
-
-  // Hover glow. The hovered painting is identified by its atlas cell, which the
-  // canvas UV already carries: no painting index attribute and no extra draw.
-  // A zero-size rect (nothing hovered) can never contain a UV, so this is off
-  // without a branch. The glow is strongest at the canvas edge, so the painting
-  // reads as outlined rather than washed out.
-  var glow = 0.0;
-  if (u.painting_glow.x > 0.5) {
-    let local = (in.uv - u.hover_rect.xy) / max(u.hover_rect.zw, vec2<f32>(1.0e-6));
-    let inside = local.x > 0.0 && local.x < 1.0 && local.y > 0.0 && local.y < 1.0;
-    if (inside) {
-      let edge = min(min(local.x, 1.0 - local.x), min(local.y, 1.0 - local.y));
-      glow = (1.0 - smoothstep01(0.0, 0.12, edge)) * u.painting_glow.y;
-    }
-  }
-  color = select(color, canvas + glow * vec3<f32>(1.0, 0.85, 0.55), is_painting);
+  color = select(color, canvas, is_painting);
 
   color = color * u.tonemap.x;
   if (u.tonemap.y > 0.5) {

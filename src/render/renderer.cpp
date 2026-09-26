@@ -40,12 +40,12 @@ struct SceneUniforms {
   float bounce[4];                      // 16
   float ceil_glow[4];                   // 16
   float light_count[4];                 // 16
-  float hover_rect[4];                  // 16  xy = atlas uv origin, zw = size
-  float painting_glow[4];               // 16  x = enabled, y = strength
+  float painting_glow[4];               // 16  x = enabled, y = strength,
+                                        //     z = hovered painting index
   math::Mat4 light_view_proj[world::kMaxLightsPerFragment];  // 4 * 64
   GpuLight lights[world::kMaxLightsPerFragment];             // 4 * 80
 };
-static_assert(sizeof(SceneUniforms) == 64 + 13 * 16 + 4 * 64 + 4 * 80);
+static_assert(sizeof(SceneUniforms) == 64 + 12 * 16 + 4 * 64 + 4 * 80);
 
 struct SkyUniforms {
   float top[4];
@@ -426,7 +426,7 @@ void Renderer::BuildScenePipeline() {
   depth_stencil.depthWriteEnabled = true;
   depth_stencil.depthCompare = wgpu::CompareFunction::Less;
 
-  wgpu::VertexAttribute attributes[4] = {};
+  wgpu::VertexAttribute attributes[5] = {};
   attributes[0].shaderLocation = 0;
   attributes[0].format = wgpu::VertexFormat::Float32x3;
   attributes[0].offset = offsetof(world::Vertex, px);
@@ -439,11 +439,14 @@ void Renderer::BuildScenePipeline() {
   attributes[3].shaderLocation = 3;
   attributes[3].format = wgpu::VertexFormat::Float32;
   attributes[3].offset = offsetof(world::Vertex, material);
+  attributes[4].shaderLocation = 4;
+  attributes[4].format = wgpu::VertexFormat::Float32;
+  attributes[4].offset = offsetof(world::Vertex, painting_index);
 
   wgpu::VertexBufferLayout vertex_layout{};
   vertex_layout.arrayStride = sizeof(world::Vertex);
   vertex_layout.stepMode = wgpu::VertexStepMode::Vertex;
-  vertex_layout.attributeCount = 4;
+  vertex_layout.attributeCount = 5;
   vertex_layout.attributes = attributes;
 
   wgpu::RenderPipelineDescriptor pipeline_desc{};
@@ -815,16 +818,8 @@ void Renderer::RenderShadowAtlas() {
               world::kShadowAtlasSize, world::kShadowAtlasSize, lights_.size());
 }
 
-void Renderer::SetHoveredPainting(const world::PaintingPlane* plane) {
-  if (plane == nullptr) {
-    has_hover_ = false;
-    return;
-  }
-  has_hover_ = true;
-  hover_rect_[0] = plane->u0;
-  hover_rect_[1] = plane->v0;
-  hover_rect_[2] = plane->u1 - plane->u0;
-  hover_rect_[3] = plane->v1 - plane->v0;
+void Renderer::SetHoveredPainting(int painting_index) {
+  hovered_painting_ = painting_index;
 }
 
 void Renderer::RenderFrame(const player::ViewMatrices& matrices) {
@@ -871,17 +866,11 @@ void Renderer::RenderFrame(const player::ViewMatrices& matrices) {
   // needs the tile size in texels.
   scene.light_count[1] = static_cast<float>(world::kShadowTileSize);
 
-  // The hovered painting's atlas cell. When nothing is hovered the rect is
-  // zero-size and the shader's membership test can never match, so the glow
-  // stays off without a branch.
-  if (has_hover_) {
-    scene.hover_rect[0] = hover_rect_[0];
-    scene.hover_rect[1] = hover_rect_[1];
-    scene.hover_rect[2] = hover_rect_[2];
-    scene.hover_rect[3] = hover_rect_[3];
-  }
-  scene.painting_glow[0] = has_hover_ ? 1.0f : 0.0f;
+  // The hovered painting's index, so the shader can pick out its frame. -1
+  // never matches a vertex's index, so the glow is simply off.
+  scene.painting_glow[0] = hovered_painting_ >= 0 ? 1.0f : 0.0f;
   scene.painting_glow[1] = kPaintingGlow;
+  scene.painting_glow[2] = static_cast<float>(hovered_painting_);
 
   for (int i = 0; i < 3; ++i) {
     scene.sky_top[i] = kSkyTop[i];

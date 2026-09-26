@@ -32,6 +32,11 @@ struct Vertex {
   // UV already in atlas space), 3 = painting frame (lit, dark grey), 4 =
   // sculpture (lit, from the sculpture's own base colour and normal maps).
   float material = 0.0f;
+
+  // Which painting this vertex belongs to, or -1 for everything else. The frame
+  // and its canvas share the number, so the shader can light up one painting's
+  // frame when the crosshair is on it without a per-painting draw call.
+  float painting_index = -1.0f;
 };
 
 // Legacy alias: the floor range used to be flagged with a boolean, and the

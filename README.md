@@ -255,15 +255,18 @@ triggering through a wall, which a plane test alone cannot rule out.
 
 Two details keep it cheap and honest:
 
-- The hovered painting is identified in the shader by its **atlas cell**, which
-  the canvas UV already carries. The uniforms `hover_rect` and `painting_glow`
-  give the shader that cell and a strength; a fragment whose UV falls inside the
-  cell is the hovered canvas. No painting-index vertex attribute, no second draw
-  call, and a zero-size rect (nothing hovered) can never match, so there is no
-  branch to guard.
-- The glow is strongest at the canvas edge — a `smoothstep` on the distance to
-  the cell border — so the painting reads as outlined rather than washed out.
-  It is added after the unshaded canvas sample, tinted warm.
+- The hover cue is on the **frame**, not the canvas, so the artwork always reads
+  at its own brightness. Each painting's frame and canvas vertices carry the
+  painting's index in a `painting_index` attribute (-1 for everything else); the
+  uniform `painting_glow` carries the hovered index and a strength. A frame whose
+  index matches warms and brightens. No per-painting draw call, and -1 never
+  matches, so nothing else is touched.
+- The 8 m reach and nearest-hit rule keep a painting in the next room from
+  winning, which a bare plane test could not. (There is still no occlusion test;
+  the reach is what keeps it out of frame.)
+
+The crosshair is a small static dot that warms when a painting is under it but
+never changes size.
 
 Clicking (or tapping) while a painting is under the crosshair opens the enlarge
 viewer: a DOM overlay over the canvas. The big image is read straight out of the

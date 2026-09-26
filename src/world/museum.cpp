@@ -106,7 +106,7 @@ void AppendBox(const SegmentBox& box, Mesh& mesh) {
 void AppendLocalQuad(const PaintingSpot& spot, float local_x0, float local_y0,
                      float local_x1, float local_y1, float local_z,
                      const float uvs[4][2], float material, float nx, float ny,
-                     float nz, Mesh& mesh) {
+                     float nz, float painting_index, Mesh& mesh) {
   const float c = std::cos(spot.ry);
   const float s = std::sin(spot.ry);
 
@@ -138,6 +138,7 @@ void AppendLocalQuad(const PaintingSpot& spot, float local_x0, float local_y0,
     vertex.u = uvs[i][0];
     vertex.v = uvs[i][1];
     vertex.material = material;
+    vertex.painting_index = painting_index;
     mesh.vertices.push_back(vertex);
   }
   mesh.indices.push_back(base + 0);
@@ -155,7 +156,7 @@ void AppendLocalQuad(const PaintingSpot& spot, float local_x0, float local_y0,
 // Also records the canvas as a world-space plane into `planes`, so the engine can
 // raycast against paintings without knowing the frame layout.
 void AppendPainting(const PaintingSpot& spot, const Museum::PaintingUv& uv,
-                    std::vector<PaintingPlane>& planes, Mesh& mesh) {
+                    int index, std::vector<PaintingPlane>& planes, Mesh& mesh) {
   const float s = museum::config::kPaintingScale;
   const float fp = 0.05f;  // FRAME_PADDING
   const float fd = 0.08f;  // FRAME_DEPTH
@@ -174,20 +175,21 @@ void AppendPainting(const PaintingSpot& spot, const Museum::PaintingUv& uv,
   const float canvas_z = 0.0625f * s;
 
   const float flat[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+  const float idx = static_cast<float>(index);
 
   // Top and bottom bars (span the full width), then left and right (full height).
   AppendLocalQuad(spot, -fw * 0.5f, half_h - bar_t * 0.5f, fw * 0.5f,
                   half_h + bar_t * 0.5f, frame_z, flat, kMaterialFrame, 0, 0, 1,
-                  mesh);
+                  idx, mesh);
   AppendLocalQuad(spot, -fw * 0.5f, -half_h - bar_t * 0.5f, fw * 0.5f,
                   -half_h + bar_t * 0.5f, frame_z, flat, kMaterialFrame, 0, 0, 1,
-                  mesh);
+                  idx, mesh);
   AppendLocalQuad(spot, -half_w - bar_t * 0.5f, -fh * 0.5f,
                   -half_w + bar_t * 0.5f, fh * 0.5f, frame_z, flat,
-                  kMaterialFrame, 0, 0, 1, mesh);
+                  kMaterialFrame, 0, 0, 1, idx, mesh);
   AppendLocalQuad(spot, half_w - bar_t * 0.5f, -fh * 0.5f,
                   half_w + bar_t * 0.5f, fh * 0.5f, frame_z, flat,
-                  kMaterialFrame, 0, 0, 1, mesh);
+                  kMaterialFrame, 0, 0, 1, idx, mesh);
 
   // The canvas: aspect*s wide and s tall, UVs straight into its atlas cell.
   const float cw = aspect * s;
@@ -197,7 +199,7 @@ void AppendPainting(const PaintingSpot& spot, const Museum::PaintingUv& uv,
                                   {uv.u1, uv.v0},
                                   {uv.u0, uv.v0}};
   AppendLocalQuad(spot, -cw * 0.5f, -ch * 0.5f, cw * 0.5f, ch * 0.5f,
-                  canvas_z, canvas_uvs, kMaterialPainting, 0, 0, 1, mesh);
+                  canvas_z, canvas_uvs, kMaterialPainting, 0, 0, 1, idx, mesh);
 
   // The canvas plane, in the same rotated frame AppendLocalQuad used: local +Z
   // is the room-facing normal, and the canvas centre is the spot pushed out by
@@ -367,7 +369,8 @@ void Museum::EmitMesh(Mesh& out, const std::vector<PaintingUv>& painting_uvs,
   painting_planes_.clear();
   painting_planes_.reserve(painting_count);
   for (std::size_t i = 0; i < painting_count; ++i) {
-    AppendPainting(painting_spots_[i], painting_uvs[i], painting_planes_, out);
+    AppendPainting(painting_spots_[i], painting_uvs[i], static_cast<int>(i),
+                   painting_planes_, out);
   }
   out.painting_index_count =
       static_cast<std::uint32_t>(out.indices.size()) - out.painting_index_begin;

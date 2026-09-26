@@ -253,13 +253,10 @@ void Engine::Frame() {
   // Aiming is the crosshair at the screen centre, which is exactly the camera's
   // forward direction. The planes carry the canvas layout, so this needs no
   // knowledge of how a painting was framed.
-  const std::vector<world::PaintingPlane>& planes = museum_.painting_planes();
-  hovered_painting_ =
-      RaycastPainting(planes, matrices.camera_position, player_.Forward());
-  renderer_.SetHoveredPainting(
-      hovered_painting_ >= 0
-          ? &planes[static_cast<std::size_t>(hovered_painting_)]
-          : nullptr);
+  hovered_painting_ = RaycastPainting(museum_.painting_planes(),
+                                      matrices.camera_position,
+                                      player_.Forward());
+  renderer_.SetHoveredPainting(hovered_painting_);
 
   renderer_.RenderFrame(matrices);
 
