@@ -70,10 +70,6 @@ class Renderer {
   // change and there is no reason to redraw it per frame.
   void RenderShadowAtlas();
 
-  // Chooses the lights that affect this frame's viewpoint, nearest first, and
-  // writes their uniforms.
-  void SelectLights(const math::Vec3& camera_pos);
-
   platform::Window* window_ = nullptr;
 
   wgpu::Instance instance_;
@@ -125,9 +121,6 @@ class Renderer {
 
   std::vector<world::SpotLight> lights_;
   std::vector<world::ShadowView> shadow_views_;
-
-  // Per-frame light selection, reused to avoid per-frame allocation.
-  std::vector<int> selected_lights_;
 
   // Hovered painting index, or -1 when nothing is hovered.
   int hovered_painting_ = -1;

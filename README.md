@@ -20,6 +20,7 @@ This is the performance-focused successor to the Godot museum and the Three.js
 | 6 | Paintings: 27 canvases in one atlas, framed on wall spots | done |
 | 7 | Sculpture: glTF scan placed in the spawn room, its own maps | done |
 | 8 | Painting hover glow (crosshair) and click-to-enlarge viewer | done |
+| 9 | Lighting fixes: per-fragment light choice, perspective shadow tiles | done |
 
 ### Batch 1 native build blocker
 
@@ -143,8 +144,8 @@ tile of one 2048x2048 `Depth32Float` atlas, and a fragment is shadowed if it
 lies behind the surface its own spot can see. The atlas is **built once at
 startup**: the geometry and the fixtures are both static, so nothing can change
 it, and lighting a frame against it costs only the shader's lookups. That also
-decouples it from `SelectLights` — which lights a frame samples changes freely
-as the camera moves, but the atlas never has to follow. The pieces:
+means the atlas never has to follow the camera; light choice is a per-fragment
+decision now (see Lighting). The pieces:
 
 - `world/shadows.{h,cpp}` builds the light-space matrices and each light's tile
   rectangle
@@ -172,14 +173,14 @@ Two older bugs, fixed before parking, remain worth remembering:
 
 - a per-light `LoadOp::Clear` wiped the atlas, because a render pass covers the
   whole attachment and not just its viewport; it clears once, then uses `Load`
-- the orthographic matrix must keep `m[15] = 1`, or `clip.w` is always 0 and the
-  shader's `ndc = clip / clip.w` divides by zero
+- the projection matrix must be built for WebGPU's `[0, 1]` depth range and, if
+  orthographic, must keep `m[15] = 1`, or `clip.w` is always 0 and the shader's
+  `ndc = clip / clip.w` divides by zero
 
-`SelectLights` still picks nearest-N by distance with no occlusion test, so a
-neighbour's fixture can be selected for a room corner. That is now harmless:
-a light behind a wall cannot see the fragment, so its shadow lookup returns 0
-and it contributes nothing. Selection decides which lights are worth shading;
-the shadow map decides which of those actually reach the surface.
+Shadow selection needs no occlusion test on the CPU: a light behind a wall cannot
+see the fragment, so its shadow lookup returns 0 and it contributes nothing. The
+shader's per-fragment nearest-N decides which lights are worth shading; the
+shadow map decides which of those actually reach the surface.
 
 ## Paintings
 
@@ -294,9 +295,21 @@ per-pixel instead of per-vertex:
 - a separate gaussian pool of brightness on the ceiling, because a downward spot
   never lights the ceiling it hangs from (`n_dot_l` is zero up there)
 
-`SelectLights` uploads the nearest 4 fixtures and the shader sums them, clamped
-to the JS bake's `[min, max]` range. The nearest-4 choice is correct for a room
-interior but not yet for a doorway or corner — see "Parked work" above.
+Every light is uploaded (up to `world::kMaxSceneLights`), and each fragment
+picks its own nearest `world::kMaxLightsPerFragment` (4) by distance to the
+surface, then sums those, clamped to the JS bake's `[min, max]` range. Choosing
+by the **fragment** rather than by the camera is what keeps lighting fixed as the
+player walks: an earlier version selected the nearest 4 to the *camera*, which
+made a room brighten as the player approached it and could even light a floor-1
+wall with a floor-2 fixture. The per-fragment scan is arithmetic only; the
+expensive shadow taps still happen just 4 times per fragment.
+
+Shadows come from an atlas of per-light depth tiles (see `world/shadows.h`). Each
+tile is rendered with a **perspective** projection from the fixture's actual
+position. An orthographic top-down map treats the light as a parallel beam, which
+turned a doorway's lintel (directly above its threshold in light space) into an
+occluder and painted a false dark band across the doorway floor; the real ray
+from the off-centre fixture is diagonal and clears it.
 
 ## Colour pipeline
 

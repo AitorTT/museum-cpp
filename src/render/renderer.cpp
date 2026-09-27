@@ -39,13 +39,15 @@ struct SceneUniforms {
   float ambient[4];                     // 16
   float bounce[4];                      // 16
   float ceil_glow[4];                   // 16
-  float light_count[4];                 // 16
+  float light_count[4];                 // 16  x = uploaded light count
   float painting_glow[4];               // 16  x = enabled, y = strength,
                                         //     z = hovered painting index
-  math::Mat4 light_view_proj[world::kMaxLightsPerFragment];  // 4 * 64
-  GpuLight lights[world::kMaxLightsPerFragment];             // 4 * 80
+  math::Mat4 light_view_proj[world::kMaxSceneLights];  // N * 64
+  GpuLight lights[world::kMaxSceneLights];             // N * 80
 };
-static_assert(sizeof(SceneUniforms) == 64 + 12 * 16 + 4 * 64 + 4 * 80);
+static_assert(sizeof(SceneUniforms) ==
+              64 + 12 * 16 +
+                  world::kMaxSceneLights * (64 + 80));
 
 struct SkyUniforms {
   float top[4];
@@ -77,8 +79,11 @@ constexpr float kExposure = 1.0f;
 // rather than a painting that is lit up.
 constexpr float kPaintingGlow = 0.6f;
 
-// Shadow ortho box: the spot's usable radius across, and how deep to trace.
-constexpr float kShadowExtent = 9.0f;
+// Shadow tile coverage: the half-width of floor the light's tile must reach,
+// and how deep to trace. A room spans +/-5 from its fixture, so 7 reaches the
+// walls and a little past the doorway. The projection is perspective, so this
+// sets the field of view rather than an orthographic box (see BuildShadowView).
+constexpr float kShadowExtent = 7.0f;
 constexpr float kShadowDepth = 18.0f;
 
 // Shadows on. This was parked while the sampling path was unproven; it is now
@@ -704,41 +709,6 @@ void Renderer::Resize(std::uint32_t width, std::uint32_t height) {
   CreateDepthTarget();
 }
 
-void Renderer::SelectLights(const math::Vec3& camera_pos) {
-  selected_lights_.clear();
-
-  // Nearest first by distance to the fixture. With rooms on a 10u grid and a
-  // 15u range, the camera's own room is always nearest, so a fixed nearest-N
-  // gives the same answer as a proper influence test for far less work.
-  //
-  // This deliberately does NOT test occlusion: a neighbour's fixture can still
-  // be picked here. That is fine because the fragment-level shadow term rejects
-  // it -- a light behind a wall cannot see the fragment, so its shadow lookup
-  // returns 0 and it contributes nothing. Selection decides which lights are
-  // worth shading; the shadow map decides which of those actually reach the
-  // surface, which is the cheaper split than a per-light CPU occlusion test.
-  const std::size_t count =
-      std::min<std::size_t>(lights_.size(), world::kMaxLightsPerFragment);
-  if (count == 0) {
-    return;
-  }
-
-  selected_lights_.reserve(lights_.size());
-  for (std::size_t i = 0; i < lights_.size(); ++i) {
-    selected_lights_.push_back(static_cast<int>(i));
-  }
-
-  std::partial_sort(
-      selected_lights_.begin(),
-      selected_lights_.begin() + static_cast<std::ptrdiff_t>(count),
-      selected_lights_.end(), [this, &camera_pos](int a, int b) {
-        const math::Vec3 da = lights_[static_cast<std::size_t>(a)].position - camera_pos;
-        const math::Vec3 db = lights_[static_cast<std::size_t>(b)].position - camera_pos;
-        return math::Dot(da, da) < math::Dot(db, db);
-      });
-  selected_lights_.resize(count);
-}
-
 void Renderer::RenderShadowAtlas() {
   if (!kShadowsEnabled || shadow_atlas_built_) {
     return;
@@ -827,8 +797,6 @@ void Renderer::RenderFrame(const player::ViewMatrices& matrices) {
     return;
   }
 
-  SelectLights(matrices.camera_position);
-
   SceneUniforms scene{};
   scene.view_proj = matrices.view_projection;
   scene.camera_pos[0] = matrices.camera_position.x;
@@ -861,7 +829,13 @@ void Renderer::RenderFrame(const player::ViewMatrices& matrices) {
   scene.ceil_glow[1] = config::kBakeCeilGlow;
   scene.ceil_glow[2] = config::kBakeCeilSigma2;
 
-  scene.light_count[0] = static_cast<float>(selected_lights_.size());
+  // Every light is uploaded. The shader picks each fragment's nearest few for
+  // itself (kMaxLightsPerFragment), so the set is a property of the surface, not
+  // of where the camera happens to stand -- selecting here by camera distance
+  // made lighting shift as the player walked.
+  const std::size_t upload_count =
+      std::min<std::size_t>(lights_.size(), world::kMaxSceneLights);
+  scene.light_count[0] = static_cast<float>(upload_count);
   // The shader turns an atlas rect into a texel offset for its PCF taps, which
   // needs the tile size in texels.
   scene.light_count[1] = static_cast<float>(world::kShadowTileSize);
@@ -878,11 +852,10 @@ void Renderer::RenderFrame(const player::ViewMatrices& matrices) {
     scene.sky_bottom[i] = kSkyBottom[i];
   }
 
-  for (std::size_t slot = 0; slot < selected_lights_.size(); ++slot) {
-    const int index = selected_lights_[slot];
-    const world::SpotLight& light = lights_[static_cast<std::size_t>(index)];
+  for (std::size_t index = 0; index < upload_count; ++index) {
+    const world::SpotLight& light = lights_[index];
 
-    GpuLight& out = scene.lights[slot];
+    GpuLight& out = scene.lights[index];
     out.position_range[0] = light.position.x;
     out.position_range[1] = light.position.y;
     out.position_range[2] = light.position.z;
@@ -899,18 +872,16 @@ void Renderer::RenderFrame(const player::ViewMatrices& matrices) {
     out.color_energy[3] = light.energy;
 
     out.outer_and_shadow[0] = light.cone_outer;
-    // slot + 1, so the shader can treat 0 as "no shadow tile for this light".
-    out.outer_and_shadow[1] = static_cast<float>(slot + 1);
+    // Global index + 1, so the shader can index light_view_proj with it and
+    // treat 0 as "no shadow tile for this light". Each light owns a fixed atlas
+    // tile keyed off its global index.
+    out.outer_and_shadow[1] = static_cast<float>(index + 1);
 
-    // Shadow matrices and atlas rects. The per-fragment light array is indexed
-    // by `slot`, so light_view_proj is written there; atlas_rect carries the
-    // light's own tile, which is keyed off its global index (it never changes).
-    const world::ShadowView& view =
-        shadow_views_[static_cast<std::size_t>(index)];
+    const world::ShadowView& view = shadow_views_[index];
     for (int k = 0; k < 4; ++k) {
       out.atlas_rect[k] = view.atlas_rect[k];
     }
-    scene.light_view_proj[slot] = view.view_projection;
+    scene.light_view_proj[index] = view.view_projection;
   }
   queue_.WriteBuffer(scene_uniforms_, 0, &scene, sizeof(scene));
 

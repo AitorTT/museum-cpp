@@ -27,7 +27,14 @@ struct SpotLight {
 
 // How many lights a single fragment may be lit by. Rooms are 10u apart and the
 // spot range is 15u, so a fragment can see its own room's fixture plus a
-// neighbour's through a doorway; 4 is comfortable and keeps the uniform small.
+// neighbour's through a doorway; 4 is comfortable and keeps the per-fragment
+// work bounded. This is how many a fragment *sums*, not how many exist.
 inline constexpr int kMaxLightsPerFragment = 4;
+
+// How many lights the scene uploads so a fragment can choose its own nearest
+// few. The museum has one fixture per room (43), so 64 leaves headroom. The
+// shader scans all of these per fragment -- arithmetic only -- and shadow-samples
+// just the kMaxLightsPerFragment it picks.
+inline constexpr int kMaxSceneLights = 64;
 
 }  // namespace museum::world

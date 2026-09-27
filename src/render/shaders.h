@@ -49,10 +49,10 @@ struct Uniforms {
   ambient : vec4<f32>,      // x = ambient, y = min distance (E/d^2 clamp)
   bounce : vec4<f32>,       // x = wall, y = floor, z = min, w = max
   ceil_glow : vec4<f32>,    // x = base, y = glow, z = sigma^2
-  light_count : vec4<f32>,  // x = count, y = shadow tile size in texels
+  light_count : vec4<f32>,  // x = uploaded light count, y = shadow tile texels
   painting_glow : vec4<f32>,// x = enabled, y = strength, z = hovered index
-  light_view_proj : array<mat4x4<f32>, 4>,
-  lights : array<Light, 4>,
+  light_view_proj : array<mat4x4<f32>, 64>,
+  lights : array<Light, 64>,
 };
 @group(0) @binding(0) var<uniform> u : Uniforms;
 @group(0) @binding(1) var floor_tex : texture_2d<f32>;
@@ -70,6 +70,10 @@ const MAT_FLOOR : f32 = 1.0;
 const MAT_PAINTING : f32 = 2.0;
 const MAT_FRAME : f32 = 3.0;
 const MAT_SCULPTURE : f32 = 4.0;
+
+// How many lights a fragment is lit by, matching world::kMaxLightsPerFragment.
+// Every uploaded light is scanned; only this many are summed.
+const MAX_LIGHTS : i32 = 4;
 
 struct VertexIn {
   @location(0) position : vec3<f32>,
@@ -253,12 +257,51 @@ fn fs_main(in : VertexOut) -> @location(0) vec4<f32> {
   }
   lit = select(lit, albedo * ceil_pool, up_facing > 0.5);
 
-  // No early-continue in this loop: keeping every light evaluated means the
-  // contributions stay a straight sum, which is the shape the shadow lookup
-  // needs once it is switched back on.
+  // Per-fragment light choice. Every uploaded light is scanned, and the four
+  // nearest to THIS fragment are lit by. Choosing by the fragment rather than
+  // by the camera is what keeps a wall's lighting fixed as the player walks: a
+  // camera-based nearest-N made rooms brighten as the player approached, and
+  // could even pick a fixture on another floor.
+  //
+  // The scan is arithmetic only; the expensive shadow taps still happen just
+  // MAX_LIGHTS times, for the four that were picked.
   let count = i32(u.light_count.x);
-  for (var i = 0; i < count; i = i + 1) {
-    let light = u.lights[i];
+  var chosen : array<i32, MAX_LIGHTS>;
+  var chosen_d2 : array<f32, MAX_LIGHTS>;
+  for (var k = 0; k < MAX_LIGHTS; k = k + 1) {
+    chosen[k] = -1;
+    chosen_d2[k] = 1.0e30;
+  }
+  for (var j = 0; j < count; j = j + 1) {
+    let lp = u.lights[j].position_range.xyz;
+    let dx = in.world_pos.x - lp.x;
+    let dy = in.world_pos.y - lp.y;
+    let dz = in.world_pos.z - lp.z;
+    let d2 = dx * dx + dy * dy + dz * dz;
+    // Insert into the sorted top-MAX_LIGHTS by squared distance. The list is
+    // tiny, so a straight insertion is cheaper than anything cleverer.
+    if (d2 < chosen_d2[MAX_LIGHTS - 1]) {
+      var pos = MAX_LIGHTS - 1;
+      for (var k = MAX_LIGHTS - 2; k >= 0; k = k - 1) {
+        if (chosen_d2[k] > d2) {
+          chosen_d2[k + 1] = chosen_d2[k];
+          chosen[k + 1] = chosen[k];
+          pos = k;
+        }
+      }
+      chosen_d2[pos] = d2;
+      chosen[pos] = j;
+    }
+  }
+
+  for (var s = 0; s < MAX_LIGHTS; s = s + 1) {
+    let li = chosen[s];
+    // A slot with no light is filled with light 0 but masked out, so the shadow
+    // sample below is still taken on a valid index in uniform control flow.
+    let index = max(li, 0);
+    let lit_mask = select(0.0, 1.0, li >= 0);
+
+    let light = u.lights[index];
     let light_pos = light.position_range.xyz;
     let to_light = light_pos - in.world_pos;
     let light_distance = length(to_light);
@@ -273,19 +316,15 @@ fn fs_main(in : VertexOut) -> @location(0) vec4<f32> {
 
     let in_range = select(0.0, 1.0, light_distance <= light.position_range.w);
     let facing = select(0.0, 1.0, n_dot_l > 0.0);
-    let influence = cone * in_range * facing;
+    let influence = cone * in_range * facing * lit_mask;
 
     let d2 = d_squared_clamped(in.world_pos, light_pos, u.ambient.y);
     let attenuation = light.color_energy.a / d2;
 
-    // Sample unconditionally, then mask: textureSampleCompare needs uniform
-    // control flow, and the slot is a uniform value so the sample itself is
-    // safe here even where the light does not reach.
+    // Sampled unconditionally and masked: textureSampleCompare needs uniform
+    // control flow, and the light picks are per-fragment.
     let slot = i32(light.outer_and_shadow.y) - 1;
-    var visibility = 1.0;
-    if (slot >= 0) {
-      visibility = shadow_term(slot, light.atlas_rect, in.world_pos);
-    }
+    let visibility = shadow_term(max(slot, 0), light.atlas_rect, in.world_pos);
 
     lit = lit + albedo * light.color_energy.rgb * attenuation * cone * n_dot_l *
                 influence * visibility;

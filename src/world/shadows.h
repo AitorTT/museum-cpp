@@ -40,10 +40,12 @@ struct ShadowView {
 
 // Builds a light-space matrix for a downward spot.
 //
-// The projection is orthographic rather than perspective: at a 15u range with a
-// 60-degree cone the footprint is about 17u across, and an ortho box of that
-// size is both simpler to fit and free of the perspective-depth precision loss
-// that makes shadow acne hard to tune in a small tile.
+// The projection is perspective, taken from the fixture's actual position. An
+// orthographic top-down map treats the light as a parallel beam, which turns a
+// doorway lintel directly above its threshold into an occluder and paints a
+// false dark band across the doorway floor; the real ray from the off-centre
+// fixture is diagonal and clears it. `extent` is the half-width of floor the
+// tile must cover, which fixes the field of view.
 ShadowView BuildShadowView(const SpotLight& light, float extent, float depth,
                            std::uint32_t tile_index);
 

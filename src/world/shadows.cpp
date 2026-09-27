@@ -2,7 +2,17 @@
 
 #include <cmath>
 
+#include "world/config.h"
+
 namespace museum::world {
+
+// How far the fixture hangs above the floor it lights: the anchor sits
+// kHalfHeight - kWallThickness - 0.05 below the floor's centre, and the floor
+// top is kHalfHeight - kWallThickness above it (see config::FloorTopY). Both
+// terms are the same for every floor, so this is a constant.
+constexpr float kFixtureHeight =
+    2.0f * (config::kRoomHeight * 0.5f) -
+    2.0f * config::kWallThickness - 0.05f;
 
 ShadowView BuildShadowView(const SpotLight& light, float extent, float depth,
                            std::uint32_t tile_index) {
@@ -34,20 +44,20 @@ ShadowView BuildShadowView(const SpotLight& light, float extent, float depth,
   view_matrix.m[13] = -math::Dot(y_axis, eye);
   view_matrix.m[14] = -math::Dot(z_axis, eye);
 
-  // Orthographic box around the light, from just behind it to its depth.
-  const float near_plane = 0.05f;
+  // Perspective, not orthographic. An orthographic top-down map treats the
+  // light as a parallel beam: a doorway's lintel sits directly above its
+  // threshold in light space, so the vertical ray reads "occluded" and paints a
+  // dark band across the doorway floor. The fixture is 5 m off to the side, and
+  // the real ray to that floor is diagonal and clears the lintel. A perspective
+  // projection from the fixture's actual position gets that right.
+  //
+  // `extent` is the half-width the tile must cover on the floor; the field of
+  // view that reaches it from the fixture is 2*atan(extent / height).
+  const float near_plane = 0.1f;
   const float far_plane = depth;
-
-  math::Mat4 projection = math::Mat4::Identity();
-  projection.m[0] = 1.0f / extent;
-  projection.m[5] = 1.0f / extent;
-  // WebGPU clip space is z in [0, 1].
-  projection.m[10] = 1.0f / (near_plane - far_plane);
-  projection.m[14] = near_plane / (near_plane - far_plane);
-  // m[15] stays 1: an orthographic projection must produce w = 1, or the
-  // shader's divide by clip.w is a division by zero. (This is the one entry
-  // that differs from a perspective matrix, which sets it to 0 and relies on
-  // m[11] = -1 to carry w = -z.)
+  const float half_fov = std::atan2(extent, kFixtureHeight);
+  const math::Mat4 projection =
+      math::Mat4::Perspective(2.0f * half_fov, 1.0f, near_plane, far_plane);
   view.view_projection = projection * view_matrix;
 
   const std::uint32_t column = tile_index % kShadowAtlasColumns;
